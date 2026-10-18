@@ -1,0 +1,13 @@
+{
+  "source_archives": [
+    "data",
+    "downloaded_datasets",
+    "outputs_extended",
+    "step5_extended_outputs",
+    "splits_extended"
+  ],
+  "total_source_files": 3653,
+  "paths_rewritten": 11011,
+  "jsonl_records_rewritten": 209092,
+  "dataset_status": "prototype; training rights may be restricted"
+}

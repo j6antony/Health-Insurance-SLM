@@ -1,0 +1,7 @@
+{
+  "project_root": ".",
+  "raw": "data/raw",
+  "processed": "data/processed",
+  "labeled": "data/labeled",
+  "splits": "data/splits"
+}
