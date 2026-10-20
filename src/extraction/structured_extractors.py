@@ -195,7 +195,7 @@ def extract_word(file_path):
             })
 
     return {
-        "text": "\\n".join(content),
+        "text": "\n".join(content),
         "structured_data": {"tables": tables},
         "line_metadata": line_metadata,
     }
