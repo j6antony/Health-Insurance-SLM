@@ -284,6 +284,7 @@ def segment_with_slm(lines, predictions):
                 "line_id": index,
                 "text": text,
                 "bbox": line.get("bbox"),
+                "source": line.get("source"),
                 "label": label,
                 "paragraph_id": list(line["line_id"][:2]) if isinstance(line.get("line_id"), (list, tuple)) else None
             })
