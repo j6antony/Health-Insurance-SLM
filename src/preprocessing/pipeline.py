@@ -113,14 +113,31 @@ def preprocess_document(file_path, output_path= None, max_words = 300):
 
             document["processing_status"] = "processed"
 
-        # Heading segmentation is intentionally skipped
-        # until DOCX/TXT structure handling is improved.
-        document["chunks"] = []
-        document["chunk_count"] = 0
-
+        # Match the PDF heading / section / chunk pipeline while preserving
+        # logical source lines (TXT line numbers or DOCX paragraph order).
+        all_chunks = []
         for page in document["pages"]:
-            page["sections"] = []
-            page["chunks"] = []
+            lines = page["lines"]
+            if not lines:
+                page["heading_predictions"] = []
+                page["sections"] = []
+                page["chunks"] = []
+                continue
+            predictions = classify_document_lines(lines)
+            sections = segment_with_slm(lines, predictions["predictions"])
+            chunks = chunk_sections(sections, max_words=max_words)
+            for chunk in chunks:
+                chunk["document_id"] = document["document_id"]
+                chunk["page_number"] = page["page_number"]
+                chunk["chunk_id"] = (
+                    f"page_{page['page_number']}_{chunk['chunk_id']}"
+                )
+            page["heading_predictions"] = predictions["predictions"]
+            page["sections"] = sections
+            page["chunks"] = chunks
+            all_chunks.extend(chunks)
+        document["chunks"] = all_chunks
+        document["chunk_count"] = len(all_chunks)
 
         if output_path is not None:
             output_path = Path(output_path)
