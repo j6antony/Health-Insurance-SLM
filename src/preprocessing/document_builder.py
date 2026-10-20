@@ -28,17 +28,26 @@ def process_non_pdf_document(file_path):
     text = extracted["text"]
 
     lines = []
-
+    metadata = extracted.get("line_metadata", [])
+    is_word = file_path.suffix.lower() == ".docx"
     for index, line_text in enumerate(text.splitlines(), start=1):
         if not line_text.strip():
             continue
+        source = (
+            metadata[index - 1]
+            if is_word and index <= len(metadata)
+            else {"type": "txt_line", "line": index}
+            if file_path.suffix.lower() == ".txt"
+            else {"type": file_path.suffix.lower().lstrip("."), "line": index}
+        )
         lines.append({
             "text": line_text,
             "bbox": None,
             "confidence": None,
             "line_id": [index, 0, 0],
             "font_size": None,
-            "is_bold": False
+            "is_bold": bool(source.get("is_bold", False)),
+            "source": source,
         })
     page = {
         "document_id": document_id,
