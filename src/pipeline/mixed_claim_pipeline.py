@@ -1,5 +1,8 @@
 
 from pathlib import Path
+import json
+
+from src.reporting.report_builder import build_verification_report
 
 from src.preprocessing.pipeline import preprocess_document
 from src.verification.mixed_format import (
@@ -127,13 +130,27 @@ def process_mixed_claim_package(
         requirement_documents,
     )
 
+    report = build_verification_report(
+        claim_id=claim_id,
+        verification=verification,
+        requirements=requirements,
+        requirement_source="demonstration_only",
+    )
+
+    if output_dir is not None:
+        report_path = Path(output_dir) / "verification_report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+
     return {
+        "report": report,
         "claim_id": claim_id,
         "documents": documents,
         "structured_documents": structured_documents,
         "verification": verification,
         "requirements": requirements,
         "requirements_status": "demonstration_only",
-        "requires_review": verification["requires_review"],
+        "requires_review": report["requires_review"],
         "processing_status": "verification_completed",
     }
