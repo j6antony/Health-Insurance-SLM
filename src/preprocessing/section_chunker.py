@@ -35,6 +35,10 @@ def chunk_sections(sections, max_words=300):
                 "source_lines": [
                     line["line_id"] for line in current_lines
                 ],
+                "source_locations": [
+                    line["source"] for line in current_lines
+                    if line.get("source") is not None
+                ],
                 "word_count": current_word_count,
                 "oversized": current_word_count > max_words
 
