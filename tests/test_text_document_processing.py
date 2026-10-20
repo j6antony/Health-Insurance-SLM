@@ -70,7 +70,14 @@ def test_text_document_pipeline(sample_document):
         patch(
             "src.preprocessing.pipeline.extract_document_fields",
             return_value=expected_extraction
-        ) as extract_mock
+        ) as extract_mock,
+        patch(
+            "src.preprocessing.pipeline.classify_document_lines",
+            side_effect=lambda lines: {"predictions": [
+                {"line_id": i, "label": "not_heading"}
+                for i in range(1, len(lines) + 1)
+            ]}
+        ) as headings_mock
     ):
         result = preprocess_document(sample_document)
 
@@ -82,6 +89,9 @@ def test_text_document_pipeline(sample_document):
     assert extract_mock.call_count == 1
 
     assert "General Hospital" in result["pages"][0]["text"]
-    assert result["chunk_count"] == 0
+    assert result["chunk_count"] >= 1
+    assert result["pages"][0]["sections"]
+    assert result["chunks"][0]["source_locations"]
+    assert headings_mock.call_count == 1
 
     print(f"{sample_document.suffix} pipeline passed!")
