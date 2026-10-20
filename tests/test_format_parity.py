@@ -76,3 +76,18 @@ def test_txt_preserves_line_numbers(tmp_path):
     lines = document["pages"][0]["lines"]
     assert lines[0]["source"]["line"] == 1
     assert lines[1]["source"]["line"] == 2
+
+
+def test_invalid_date_order_requires_record_review():
+    from src.verification.structured_field_validator import validate_record
+
+    record = _record({
+        "claim_id": "CLM001",
+        "admission_date": "2026-10-07",
+        "discharge_date": "2026-10-03",
+    })
+    validate_record(record)
+    assert record["requires_review"] is True
+    assert any(i["type"] == "discharge_before_admission"
+               for i in record["issues"])
+    assert all(field["requires_review"] for field in record["fields"])
