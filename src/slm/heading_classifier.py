@@ -2,9 +2,9 @@ import json
 import os
 from ollama import Client
 from typing import Literal
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel
 
-MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen3:4b-instruct")
 
 LABELS = {
     "document_header",
@@ -26,6 +26,24 @@ class SingleLinePrediction(BaseModel):
         "subsection_heading",
         "not_heading"
     ]
+
+
+class DocumentLinePrediction(BaseModel):
+    line_id: int
+    label: Literal[
+        "document_header",
+        "document_title",
+        "section_heading",
+        "subsection_heading",
+        "field_label",
+        "body_text",
+        "list_item",
+        "separator"
+    ]
+
+
+class ClassificationResponse(BaseModel):
+    predictions: list[DocumentLinePrediction]
 
 
 client = Client(host="http://localhost:11434")

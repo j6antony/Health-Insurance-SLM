@@ -4,7 +4,7 @@ from typing import Literal
 from ollama import Client
 from pydantic import BaseModel, Field
 
-MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen3:4b-instruct")
 
 client = Client(host="http://localhost:11434")
 

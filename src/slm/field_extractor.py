@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from src.verification.field_validator import validate_field
 from src.verification.evidence_matcher import recover_evidence
 
-MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen3:4b-instruct")
 
 client = Client(host="http://localhost:11434")
 
