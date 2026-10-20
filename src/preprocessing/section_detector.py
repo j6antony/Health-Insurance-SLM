@@ -134,33 +134,31 @@ HEADING_LABELS = {
     "subsection_heading"
 }
 
-def is_valid_section_boundary(line, label):
-    """
-    Validate whether an SLM-predicted heading
-    is structurally suitable as a section boundary.
-    """
-
-    if label not in HEADING_LABELS:
-        return False
-
+def is_valid_section_boundary(line, label, previous=None, following=None):
+    """Require structural evidence in addition to the model's prediction."""
     text = line["text"].strip()
-
-    if not text:
+    # Numbered form sections are unambiguous even when the model misses them.
+    if re.match(r"^SECTION\s+\d+\b", text, re.I):
+        return True
+    if label not in HEADING_LABELS or not text:
         return False
-
-    # Bullet points should remain list items
-    if text.startswith(("•", "◦", "*")):
+    if text.startswith(("•", "◦", "*", "-", "\x07", "(")):
         return False
-
-    # Exclude logical separators
-    if text.upper() in {"OR", "AND", "YES", "NO"}:
+    if text.upper() in {"OR", "AND", "YES", "NO", "N/A"}:
         return False
-
-    # Exclude ordinary sentences
-    if text.endswith((".", "?", "!")):
+    if text[0].islower() or len(text.split()) > 12:
         return False
-
-    return True
+    if text.endswith((".", "?", "!", "*")):
+        return False
+    # A field label remains content even if it is bold or title-cased.
+    if re.search(r"\b(date|time|number|diagnosis|address|name|period|ssn)\b", text, re.I):
+        return False
+    if previous and previous["text"].strip().upper() in {"OR", "AND"}:
+        return False
+    if following and following["text"].strip().upper() == "OR":
+        return False
+    # Ordinary prose and unformatted form labels need more than an SLM vote.
+    return bool(line.get("is_bold")) or (text.endswith(":") and len(text.split()) >= 5)
 
 
 def segment_with_slm(lines, predictions):
@@ -254,7 +252,11 @@ def segment_with_slm(lines, predictions):
         label = prediction_map[index]
         text = line["text"].strip()
 
-        if is_valid_section_boundary(line, label):
+        if is_valid_section_boundary(
+            line, label,
+            lines[index - 2] if index > 1 else None,
+            lines[index] if index < len(lines) else None
+        ):
 
             # Preserve the previous section
             if (
@@ -282,7 +284,8 @@ def segment_with_slm(lines, predictions):
                 "line_id": index,
                 "text": text,
                 "bbox": line.get("bbox"),
-                "label": label
+                "label": label,
+                "paragraph_id": list(line["line_id"][:2]) if isinstance(line.get("line_id"), (list, tuple)) else None
             })
 
     # --------------------------------------------------------

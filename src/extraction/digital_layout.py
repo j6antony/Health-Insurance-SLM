@@ -1,3 +1,4 @@
+from src.extraction.reading_order import order_lines
 
 def extract_digital_layout(page):
     data = page.get_text("dict")
@@ -51,4 +52,4 @@ def extract_digital_layout(page):
             "bbox": list(block["bbox"])
         })
 
-    return lines, paragraphs
+    return order_lines(lines), paragraphs

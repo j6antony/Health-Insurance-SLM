@@ -17,3 +17,6 @@ pytesseract==0.3.13
 RapidFuzz==3.14.6
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.20,<1

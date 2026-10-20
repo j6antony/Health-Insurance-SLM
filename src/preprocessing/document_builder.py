@@ -1,3 +1,4 @@
+from src.extraction.reading_order import order_lines
 import uuid
 from datetime import datetime, timezone
 from src.extraction.pdf_extractor import needs_ocr
@@ -47,7 +48,7 @@ def build_document(page, filename, page_number):
 
     if requires_ocr:
         words = extract_ocr_blocks(page)
-        lines = group_words_into_lines(words)
+        lines = order_lines(group_words_into_lines(words))
         paragraphs = group_lines_into_paragraphs(lines)
 
         return {
