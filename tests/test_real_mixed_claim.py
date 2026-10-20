@@ -140,12 +140,12 @@ def main():
         indent=2
     ))
 
+    # The mixed pipeline already writes the standardized reviewer report.
     report_path = OUTPUT_DIR / "verification_report.json"
-
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, default=str)
-
-    print(f"\nReport saved: {report_path}")
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["claim_id"] == "CLM001"
+    print(f"\nReviewer report saved: {report_path}")
 
     statuses = {
         item["field_name"]: item["status"]
