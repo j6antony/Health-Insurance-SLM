@@ -34,7 +34,7 @@ def preprocess_document(file_path, output_path= None, max_words = 300):
             chunk["document_id"] = document["document_id"]
             chunk["page_number"] = page["page_number"]
             chunk["chunk_id"] = (
-                f"page_{page["page_number"]}_{chunk["chunk_id"]}"
+                f"page_{page['page_number']}_{chunk['chunk_id']}"
             )
 
         page["heading_predictions"] = predictions["predictions"]

@@ -38,7 +38,7 @@ def run_job(job_id, uploads):
     except Exception:
         logging.exception('Claim processing failed')
         with LOCK:
-            JOBS[job_id].update(status='failed', error='Verification failed. Check that PDFs are readable and unlocked, and Ollama is running with qwen3:4b-instruct. See the backend terminal for details.')
+            JOBS[job_id].update(status='failed', error='Verification failed. Check that PDFs are readable and unlocked, and Ollama is running with qwen2.5:3b-instruct. See the backend terminal for details.')
     finally:
         BUSY.release()
 

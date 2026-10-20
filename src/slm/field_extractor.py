@@ -1,10 +1,11 @@
+import os
 from typing import Literal
 from ollama import Client
 from pydantic import BaseModel, Field
 from src.verification.field_validator import validate_field
 from src.verification.evidence_matcher import recover_evidence
 
-MODEL_NAME = "qwen3:4b-instruct"
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
 
 client = Client(host="http://localhost:11434")
 
@@ -22,7 +23,7 @@ FieldName = Literal[
 class ExtractField(BaseModel):
     field_name: FieldName
     value: str
-    evidence: str
+    evidence: str = Field(description="Short exact excerpt (under 100 characters) from the document containing the value")
     page_number: int
     requires_review: bool = False
 
@@ -56,15 +57,16 @@ def extract_page_fields(page):
     5. A company name in a logo or footer is not automatically
     the hospital name.
     6. Do not extract example patient names or example amounts.
-    7. Values MUST be copied exactly as written in the document.
-        Do not normalize dates, amounts, or identifiers.
-        For monetary amounts, preserve currency symbols,
-        commas, and decimal places.
+    7. Values MUST be copied exactly as written in the document verbatim.
+        Do not normalize or reformat dates, amounts, or identifiers.
+        If a date is written as 10/08/2026, copy '10/08/2026' exactly; do NOT convert it to 2026-10-08.
+        If a date is written as 2026-10-03, copy '2026-10-03' exactly.
+        For monetary amounts, preserve currency symbols, commas, and decimal places.
         Example:
         Source: Total Hospital Charges: $8,700.00
         Correct value: $8,700.00
         Incorrect value: 8700.00
-    8. Evidence must be an exact substring of the document text.
+    8. Evidence must be a short exact excerpt (only the single line or sentence containing the value, under 100 characters). Do NOT output the entire document.
     9. Use an empty fields list when no populated fields exist.
     10. Mark ambiguous values as requires_review=true.
     11. A currency symbol such as "$" does not establish
@@ -85,16 +87,21 @@ def extract_page_fields(page):
         think = False,
         options = {
             "temperature": 0,
-            "num_predict": 1024
+            "repeat_penalty": 1.15,
+            "num_predict": 2048
         }
     )
 
     if not response.message.content:
         raise ValueError("Empty field extraction response")
 
-    parsed = FieldExtractionResult.model_validate_json(
-        response.message.content
-    )
+    try:
+        parsed = FieldExtractionResult.model_validate_json(
+            response.message.content
+        )
+    except Exception as e:
+        print("\n[DEBUG] Raw model response:\n", response.message.content)
+        raise e
 
     
     validated = []
