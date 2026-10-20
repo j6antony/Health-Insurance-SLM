@@ -1,10 +1,11 @@
 
+import os
 from ollama import Client
 
 client = Client(host="http://localhost:11434")
 
 response = client.chat(
-    model="qwen3:4b-instruct",
+    model=os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct"),
     messages=[
         {
             "role": "user",

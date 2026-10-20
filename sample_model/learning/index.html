@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Micro-LLaMA SLM Interactive Learning Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0b0f19;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-hover: rgba(28, 38, 60, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(99, 102, 241, 0.3);
+      --primary: #6366f1;
+      --primary-light: #818cf8;
+      --accent: #06b6d4;
+      --accent-pink: #ec4899;
+      --accent-green: #10b981;
+      --accent-amber: #f59e0b;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: radial-gradient(circle at 15% 15%, #131b2e 0%, #080c14 100%);
+      color: var(--text-main);
+      font-family: 'Outfit', sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    header {
+      padding: 3.5rem 2rem 2rem;
+      text-align: center;
+      position: relative;
+    }
+
+    .badge-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: var(--primary-light);
+      padding: 0.35rem 1rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #ffffff 30%, #94a3b8 70%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 680px;
+      margin: 0 auto;
+    }
+
+    /* Tabs Navigation */
+    .nav-tabs-wrapper {
+      display: flex;
+      justify-content: center;
+      padding: 1rem 1.5rem 2rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(11, 15, 25, 0.8);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.4rem;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.65rem 1.35rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .tab-btn.active {
+      background: var(--primary);
+      color: #ffffff;
+      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+    }
+
+    /* Container */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 6rem;
+    }
+
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.35s ease;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin-bottom: 2rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--primary), transparent);
+      opacity: 0.4;
+    }
+
+    h2 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    h3 {
+      font-size: 1.25rem;
+      color: var(--accent);
+      margin: 1.5rem 0 0.75rem;
+      font-weight: 600;
+    }
+
+    p {
+      color: #cbd5e1;
+      margin-bottom: 1rem;
+      font-size: 1.05rem;
+    }
+
+    /* Interactive BPE Simulator */
+    .simulator-box {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+
+    .token-display {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1rem 0;
+      min-height: 50px;
+      align-items: center;
+    }
+
+    .token-chip {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #e0e7ff;
+      padding: 0.4rem 0.8rem;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      display: inline-flex;
+      align-items: center;
+      transition: all 0.3s;
+    }
+
+    .token-chip.merged {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: #10b981;
+      color: #a7f3d0;
+      transform: scale(1.05);
+    }
+
+    .sim-controls {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      background: var(--primary);
+      color: #ffffff;
+      border: none;
+      padding: 0.65rem 1.4rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: 0.2s;
+    }
+
+    .btn:hover {
+      background: var(--primary-light);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    /* Comparison Tables */
+    .table-container {
+      overflow-x: auto;
+      margin: 1.5rem 0;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.95rem;
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 1rem;
+      color: var(--primary-light);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: #cbd5e1;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .badge-check {
+      color: var(--accent-green);
+      font-weight: 700;
+    }
+
+    .badge-cross {
+      color: #ef4444;
+      font-weight: 700;
+    }
+
+    /* Stat Cards */
+    .grid-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+      margin: 1.5rem 0;
+    }
+
+    .stat-card {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-align: center;
+      position: relative;
+    }
+
+    .stat-val {
+      font-size: 2.25rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--primary-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.25rem;
+    }
+
+    .stat-label {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Code Snippets */
+    pre {
+      background: #070a12;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1.25rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      color: #e2e8f0;
+      overflow-x: auto;
+      margin: 1rem 0;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent);
+      background: rgba(6, 182, 212, 0.1);
+      padding: 0.15rem 0.35rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+
+    /* Accordion / Presentation Cards */
+    .qa-box {
+      border-left: 3px solid var(--primary);
+      background: rgba(99, 102, 241, 0.06);
+      padding: 1.25rem 1.5rem;
+      border-radius: 0 10px 10px 0;
+      margin: 1rem 0;
+    }
+
+    .qa-title {
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 0.4rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="badge-pill">Interactive Presentation & Learning Portal</div>
+    <h1>Micro-LLaMA SLM (TinyStories)</h1>
+    <p class="subtitle">A complete first-principles walkthrough: From Byte-Pair Encoding & 4K Vocab optimization to RoPE attention, SwiGLU, and text generation.</p>
+  </header>
+
+  <div class="nav-tabs-wrapper">
+    <div class="nav-tabs">
+      <button class="tab-btn active" onclick="openTab('tab-overview', this)">
+        <span>🎯</span> Executive Summary
+      </button>
+      <button class="tab-btn" onclick="openTab('tab-bpe', this)">
+        <span>🔤</span> 1. What is BPE?
+      </button>
+      <button class="tab-btn" onclick="openTab('tab-vocab-trap', this)">
+        <span>⚖️</span> 2. The 4K Vocab Trap
+      </button>
+      <button class="tab-btn" onclick="openTab('tab-architecture', this)">
+        <span>🧠</span> 3. LLaMA vs. GPT-2
+      </button>
+      <button class="tab-btn" onclick="openTab('tab-training', this)">
+        <span>⚡</span> 4. Training & Sampling
+      </button>
+      <button class="tab-btn" onclick="openTab('tab-team-defense', this)">
+        <span>🎤</span> Team Defense Q&A
+      </button>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- TAB 0: OVERVIEW -->
+    <div id="tab-overview" class="tab-content active">
+      <div class="card">
+        <h2><span>🎯</span> Project Objective & System Specs</h2>
+        <p>We built a production-grade <strong>Small Language Model (SLM) completely from scratch in PyTorch</strong> without third-party model wrappers. The model is specifically configured to run with high efficiency on a consumer GPU (RTX 3050 Laptop, 4GB VRAM).</p>
+        
+        <div class="grid-stats">
+          <div class="stat-card">
+            <div class="stat-val">2.56M</div>
+            <div class="stat-label">Total Parameters</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val">4,096</div>
+            <div class="stat-label">Custom BPE Vocab</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val">256</div>
+            <div class="stat-label">Sequence Length</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val">&lt; 1.2 GB</div>
+            <div class="stat-label">VRAM Peak Footprint</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span>🧭</span> The End-to-End Pipeline in 5 Steps</h2>
+        <div class="qa-box">
+          <div class="qa-title">1. Synthetic Data Stream</div>
+          <p>Streamed 50,000 stories from <code>roneneldan/TinyStories</code> into a local corpus (~44 MB) with explicit <code>&lt;|endoftext|&gt;</code> separators.</p>
+        </div>
+        <div class="qa-box">
+          <div class="qa-title">2. Custom Byte-Level BPE Tokenizer</div>
+          <p>Trained a 4,096-vocab tokenizer from 256 byte primitives with zero out-of-vocabulary (<code>&lt;unk&gt;</code>) failures.</p>
+        </div>
+        <div class="qa-box">
+          <div class="qa-title">3. Modern Decoder Architecture</div>
+          <p>Implemented RMSNorm, Rotary Position Embeddings (RoPE), SwiGLU FFN, and FlashAttention-backed Causal Self-Attention.</p>
+        </div>
+        <div class="qa-box">
+          <div class="qa-title">4. FP16 Mixed-Precision Training</div>
+          <p>Optimized with AdamW, Cosine Annealing, linear warmup, and weight-tying regularization.</p>
+        </div>
+        <div class="qa-box">
+          <div class="qa-title">5. Interactive Sampling CLI</div>
+          <p>Enabled text generation with Temperature, Top-K, and Nucleus (Top-P) probability filtering.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 1: BPE -->
+    <div id="tab-bpe" class="tab-content">
+      <div class="card">
+        <h2><span>🔤</span> What is Byte-Pair Encoding (BPE)?</h2>
+        <p>Computers cannot read English letters. They only calculate numbers. <strong>Tokenization</strong> turns text into numbers.</p>
+        
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Strategy</th>
+                <th>How It Works</th>
+                <th>Why It Fails</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Word-Level</strong></td>
+                <td>Every unique word gets a number.</td>
+                <td><span class="badge-cross">❌</span> Huge 500k dictionary; crashes on typos, slang, or new names (<code>&lt;unk&gt;</code>).</td>
+              </tr>
+              <tr>
+                <td><strong>Character-Level</strong></td>
+                <td>Every letter gets a number.</td>
+                <td><span class="badge-cross">❌</span> A 100-word story turns into 600 numbers. The model spends all its capacity learning to spell.</td>
+              </tr>
+              <tr>
+                <td><strong>Byte-Pair Encoding (BPE)</strong></td>
+                <td>Starts with bytes, repeatedly merges most frequent pairs.</td>
+                <td><span class="badge-check">✅</span> Frequent words stay whole (<code>"the"</code>); unknown words break into syllables. Never crashes!</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Interactive BPE Step-by-Step Simulator</h3>
+        <p>Watch how BPE finds frequent letter pairs and merges them into whole tokens:</p>
+
+        <div class="simulator-box">
+          <div style="font-size: 0.95rem; color: var(--text-muted);">Current tokens for: <em>"the cat saw the dog"</em></div>
+          <div class="token-display" id="bpeDisplay">
+            <!-- Injected via JS -->
+          </div>
+          <div style="color: var(--accent); font-weight: 600;" id="simStatus">Initial state: 13 individual character tokens.</div>
+          <div class="sim-controls">
+            <button class="btn" id="nextMergeBtn" onclick="nextMerge()">Next Merge Step ⏩</button>
+            <button class="btn btn-secondary" onclick="resetSim()">Reset 🔄</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: VOCAB TRAP -->
+    <div id="tab-vocab-trap" class="tab-content">
+      <div class="card">
+        <h2><span>⚖️</span> The "Vocab Size Trap" in Small Models</h2>
+        <p>Why didn't we just use the standard ChatGPT / GPT-2 tokenizer with <strong>50,257 tokens</strong>? Here is the exact parameter math:</p>
+
+        <div class="qa-box" style="border-left-color: var(--accent-pink);">
+          <div class="qa-title">The Embedding Formula</div>
+          <p>Embedding Table Parameters = <code>Vocabulary Size × Hidden Dimension (d)</code></p>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Tokenizer Choice</th>
+                <th>Embedding Table Cost ($192 \times V$)</th>
+                <th>Transformer Brain Parameters</th>
+                <th>Model Resource Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>GPT-2 Vocab (50,257 tokens)</strong></td>
+                <td><strong>9,649,344 (~9.65M)</strong></td>
+                <td>~1.77M</td>
+                <td><span class="badge-cross">❌ 85% of model is just a dictionary lookup!</span></td>
+              </tr>
+              <tr>
+                <td><strong>Our Custom Vocab (4,096 tokens)</strong></td>
+                <td><strong>786,432 (~0.78M)</strong></td>
+                <td>~1.77M</td>
+                <td><span class="badge-check">✅ 70% of model is dedicated to Transformer reasoning!</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Weight Tying Innovation</h3>
+        <p>At the end of the Transformer, the LM Head projects the hidden state back to vocab size ($192 \rightarrow 4096$). By <strong>weight-tying</strong> the output projection matrix to the input embedding matrix ($W_{\text{out}} = W_{\text{embed}}^T$), we saved another <strong>786,432 parameters (~23% of total model)</strong> and prevented overfitting!</p>
+      </div>
+    </div>
+
+    <!-- TAB 3: ARCHITECTURE -->
+    <div id="tab-architecture" class="tab-content">
+      <div class="card">
+        <h2><span>🧠</span> Micro-LLaMA vs. Legacy GPT-2</h2>
+        <p>We avoided the 2019 GPT-2 design and implemented the state-of-the-art <strong>LLaMA 3 / Mistral (2024–2026)</strong> architecture:</p>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Legacy GPT-2 (2019)</th>
+                <th>Our Micro-LLaMA (2024–2026)</th>
+                <th>Why Modern Wins</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Normalization</strong></td>
+                <td>LayerNorm (Centers & scales)</td>
+                <td><strong>RMSNorm</strong></td>
+                <td>Removes mean-centering; saves ~7% compute with identical mathematical stability.</td>
+              </tr>
+              <tr>
+                <td><strong>Positional Embeddings</strong></td>
+                <td>Absolute Learned Positional Embeddings</td>
+                <td><strong>RoPE (Rotary Position Embeddings)</strong></td>
+                <td>Rotates Q and K in complex 2D planes; encodes relative distance naturally and generalizes past training length.</td>
+              </tr>
+              <tr>
+                <td><strong>Feed-Forward</strong></td>
+                <td>Standard GELU MLP ($xW_1 \rightarrow \text{GELU} \rightarrow W_2$)</td>
+                <td><strong>SwiGLU Gated Activation</strong></td>
+                <td>Gated multiplication with SiLU yields significantly faster convergence and lower cross-entropy loss.</td>
+              </tr>
+              <tr>
+                <td><strong>Attention Engine</strong></td>
+                <td>Explicit $Q \cdot K^T / \sqrt{d}$ matrix multiplication</td>
+                <td><strong>FlashAttention / PyTorch SDPA</strong></td>
+                <td>Fuses softmax and causal masking into C++/CUDA kernels for high token throughput.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code># The Micro-LLaMA Decoder Block in PyTorch (src/model/llama.py)
+class TransformerBlock(nn.Module):
+    def forward(self, x, freqs_cis):
+        # 1. Pre-RMSNorm + Rotary Causal Self-Attention
+        h = x + self.attention(self.attention_norm(x), freqs_cis)
+        # 2. Pre-RMSNorm + SwiGLU Feed-Forward
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out</code></pre>
+      </div>
+    </div>
+
+    <!-- TAB 4: TRAINING -->
+    <div id="tab-training" class="tab-content">
+      <div class="card">
+        <h2><span>⚡</span> Training & Generation Pipeline</h2>
+        
+        <h3>1. Next-Token Prediction & Initial Loss Math</h3>
+        <p>A language model is an auto-complete predictor. It outputs probabilities for all 4,096 tokens in our dictionary.</p>
+        <p>At Step 1, before learning anything, each token has equal random probability ($1 / 4096$). Therefore, the theoretical initial loss is:</p>
+        <div class="qa-box">
+          <code>Initial Loss = -ln(1 / 4096) = ln(4096) ≈ 8.318</code>
+          <p style="margin-top: 0.5rem; color: #a7f3d0;">In our actual smoke test log, our initial loss was <strong>8.358</strong>! This mathematically verified our clean random weight initialization.</p>
+        </div>
+
+        <h3>2. Hardware Optimization for RTX 3050 (4GB VRAM)</h3>
+        <ul>
+          <li><strong>FP16 Mixed Precision (AMP)</strong>: Halves tensor memory from 4 bytes (FP32) to 2 bytes (FP16).</li>
+          <li><strong>AdamW Optimizer with Decoupled Decay</strong>: Weight decay (0.05) is applied strictly to 2D matrices, ignoring 1D biases and RMSNorm gains.</li>
+          <li><strong>Cosine Annealing with Warmup</strong>: Ramps learning rate smoothly to avoid gradient shock in early iterations.</li>
+          <li><strong>Gradient Clipping (1.0)</strong>: Prevents destabilizing gradients during training.</li>
+        </ul>
+
+        <h3>3. Autoregressive Sampling Controls</h3>
+        <p>In <code>src/generate.py</code>, we control how the model outputs text:</p>
+        <ul>
+          <li><strong>Temperature</strong>: Controls probability sharpness (0 = greedy/repetitive, 0.8 = balanced story creativity).</li>
+          <li><strong>Top-K</strong>: Restricts sampling to the top 40 candidates.</li>
+          <li><strong>Top-P (Nucleus)</strong>: Restricts sampling to the dynamic cumulative 90% probability mass.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- TAB 5: TEAM DEFENSE -->
+    <div id="tab-team-defense" class="tab-content">
+      <div class="card">
+        <h2><span>🎤</span> Team Presentation Defense Guide</h2>
+        <p>Anticipated questions your team or tech lead might ask during your presentation:</p>
+
+        <div class="qa-box">
+          <div class="qa-title">Q1: Why did you train on TinyStories instead of Wikipedia or Common Crawl?</div>
+          <p><strong>Answer:</strong> High-entropy open-web datasets require billions of parameters to avoid generating incoherent gibberish. The Microsoft Research <em>TinyStories</em> paper demonstrated that domain-bounded language with simple syntax allows ultra-compact models under 10M parameters to master coherent grammar, story progression, and reasoning.</p>
+        </div>
+
+        <div class="qa-box">
+          <div class="qa-title">Q2: Why not just fine-tune an existing model using LoRA / QLoRA?</div>
+          <p><strong>Answer:</strong> The goal was to build an SLM from foundational first principles. Writing raw PyTorch tensors, implementing RoPE complex rotations, creating the custom BPE tokenizer, and writing the training loop gives complete ownership of every component and zero external black-box dependencies.</p>
+        </div>
+
+        <div class="qa-box">
+          <div class="qa-title">Q3: Why did you use RoPE instead of ALiBi?</div>
+          <p><strong>Answer:</strong> RoPE is the universal standard in modern state-of-the-art models (Llama 3, Mistral, Gemma, Qwen). While ALiBi uses a static attention bias, RoPE rotates tokens in 2D planes, preserving fine-grained syntactic precision while still maintaining relative distance decay.</p>
+        </div>
+
+        <div class="qa-box">
+          <div class="qa-title">Q4: Why did we build our own tokenizer instead of using the HuggingFace LLaMA-3 tokenizer?</div>
+          <p><strong>Answer:</strong> LLaMA 3 has a 128,000 token vocabulary. For an SLM with hidden dimension 192, a 128k tokenizer would require an embedding matrix of $128,000 \times 192 \approx 24.5\text{ Million parameters}$—making the model almost 10× larger solely due to the dictionary! Our 4,096 BPE keeps the model compact at 2.56M total parameters.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    function openTab(tabId, element) {
+      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      element.classList.add('active');
+    }
+
+    // BPE Simulation State
+    const bpeSteps = [
+      {
+        tokens: ["t", "h", "e", "·", "c", "a", "t", "·", "s", "a", "w", "·", "t", "h", "e", "·", "d", "o", "g"],
+        status: "Step 0: Initial state with 13 distinct character tokens. Most frequent pair: ('t', 'h') appeared 2 times."
+      },
+      {
+        tokens: ["th", "e", "·", "c", "a", "t", "·", "s", "a", "w", "·", "th", "e", "·", "d", "o", "g"],
+        merged: ["th"],
+        status: "Merge #1: Merged ('t', 'h') → 'th'! Next most frequent pair: ('th', 'e')."
+      },
+      {
+        tokens: ["the", "·", "c", "a", "t", "·", "s", "a", "w", "·", "the", "·", "d", "o", "g"],
+        merged: ["the"],
+        status: "Merge #2: Merged ('th', 'e') → 'the'! 'the' is now a SINGLE token!"
+      },
+      {
+        tokens: ["the", "·", "c", "at", "·", "s", "a", "w", "·", "the", "·", "d", "o", "g"],
+        merged: ["at"],
+        status: "Merge #3: Merged ('a', 't') → 'at'! Next frequent pair: ('c', 'at')."
+      },
+      {
+        tokens: ["the", "·", "cat", "·", "s", "a", "w", "·", "the", "·", "d", "o", "g"],
+        merged: ["cat"],
+        status: "Merge #4: Merged ('c', 'at') → 'cat'! 'the' and 'cat' are now individual words!"
+      }
+    ];
+
+    let currentStep = 0;
+
+    function renderBPE() {
+      const display = document.getElementById("bpeDisplay");
+      const status = document.getElementById("simStatus");
+      const stepData = bpeSteps[currentStep];
+
+      display.innerHTML = "";
+      stepData.tokens.forEach(tok => {
+        const chip = document.createElement("div");
+        chip.className = "token-chip" + (stepData.merged && stepData.merged.includes(tok) ? " merged" : "");
+        chip.textContent = tok;
+        display.appendChild(chip);
+      });
+
+      status.textContent = stepData.status;
+
+      const btn = document.getElementById("nextMergeBtn");
+      if (currentStep >= bpeSteps.length - 1) {
+        btn.textContent = "All Merges Complete 🎉";
+        btn.disabled = true;
+      } else {
+        btn.textContent = "Next Merge Step ⏩";
+        btn.disabled = false;
+      }
+    }
+
+    function nextMerge() {
+      if (currentStep < bpeSteps.length - 1) {
+        currentStep++;
+        renderBPE();
+      }
+    }
+
+    function resetSim() {
+      currentStep = 0;
+      renderBPE();
+    }
+
+    // Initialize
+    renderBPE();
+  </script>
+</body>
+</html>

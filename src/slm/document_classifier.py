@@ -1,9 +1,10 @@
+import os
 from typing import Literal
 
 from ollama import Client
 from pydantic import BaseModel, Field
 
-MODEL_NAME = "qwen3:4b-instruct"
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
 
 client = Client(host="http://localhost:11434")
 
@@ -70,40 +71,17 @@ def classify_document(document):
         Insufficient evidence or unclear document type.
 
         Instructions:
-        - Classify the whole document, not individual sections.
-        - Use the document's purpose and content.
-        - Do not classify based only on the insurer's name.
-        - Return short evidence excerpts copied exactly
-        from the supplied document.
-        - Do not invent evidence.
-        - Return at most three short evidence excerpts.
-        - Each excerpt must be a continuous span of the supplied text.
-        - Preserve bullet markers; do not join text across omitted words or symbols.
-        - Set requires_review to true if the classification
-        is uncertain, conflicting, or unsupported.
-        - Use unknown when evidence is insufficient.
+        - Determine the primary purpose of the document.
+        - Give strong consideration to explicit document titles such as "CLAIM FORM", "PHYSICIAN STATEMENT", "HOSPITAL BILL", and "DISCHARGE SUMMARY".
+        - A document titled "CLAIM FORM" or "HOSPITAL CARE CLAIM FORM" is a claim_form.
+        - A document titled "PHYSICIAN STATEMENT" is a physician_statement.
+        - Even brief or single-page documents must be classified by their title and content; do NOT mark them as unknown if a clear title is present.
+        - Only use unknown if the text is unreadable, garbled, or has no discernible health insurance document type.
+        - Return 1-3 short exact evidence excerpts copied verbatim from the document (under 100 characters each).
+        - Set requires_review to true ONLY if the classification is genuinely conflicting or ambiguous.
 
-        DOCUMENT:
+        DOCUMENT TEXT:
         {text}
-DOCUMENT CLASSIFICATION RULES:
-
-1. Determine the primary purpose of the entire document.
-
-2. Give strong consideration to explicit document titles
-   such as "CLAIM FORM", "PHYSICIAN STATEMENT",
-   "HOSPITAL BILL", and "DISCHARGE SUMMARY".
-
-3. A claim form may contain hospital charges, diagnoses,
-   and treatment dates. These fields alone do not make
-   it a hospital bill.
-
-4. Classify a document as hospital_bill when its primary
-   purpose is to itemize and request payment for
-   healthcare services.
-
-5. When the explicit document title and content conflict,
-   evaluate both and set requires_review=true if the
-   document type remains ambiguous.
     """
     response = client.chat(
         model=MODEL_NAME,
@@ -114,7 +92,7 @@ DOCUMENT CLASSIFICATION RULES:
         think = False,
         options={
             "temperature": 0,
-            "num_predict": 512
+            "num_predict": 1024
         }
     )
 

@@ -1,9 +1,10 @@
 import json
+import os
 from ollama import Client
 from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
-MODEL_NAME = "qwen3:4b-instruct"
+MODEL_NAME = os.environ.get("SLM_MODEL_NAME", "qwen2.5:3b-instruct")
 
 LABELS = {
     "document_header",
