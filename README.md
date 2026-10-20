@@ -1,95 +1,590 @@
-# Health Insurance Document Verification SLM — Consolidated Dataset
 
-This archive consolidates the five uploaded Phase 2 archives and retains their dataset separation. It is an **OCR/model-development starting point**, not a trained model or a verified production claims dataset.
+# Health Insurance Claims Document Intelligence POC
 
-## Structure
+A local, explainable proof of concept for processing health-insurance claim documents using a Small Language Model (SLM).
 
-- `data/raw/structured/`: original CMS synthetic claims, MIMIC demo ZIP, and NLM XML report archive.
-- `data/raw/reference_pdfs/`: original Cigna, CMS RADV, and NAIC reference PDFs.
-- `data/raw/mtsamples/`, `data/raw/harvard/`, `data/raw/noisy/`, `data/raw/benchmark/`: original additional datasets (including JPG and PDF assets).
-- `data/processed/`: source-specific normalized JSONL and inventory outputs.
-- `data/labeled/`: classification, extraction, synthetic verification labels and grouping data.
-- `data/splits/`: train/validation/test JSONL partitions; preserve these as frozen test assignments.
-- `src/ocr/`, `src/preprocessing/`, `src/labeling/`, `src/splitting/`, `src/extraction/`, `src/verification/`: workspace placeholders for Phase 3 source code.
-- `tests/validate_dataset.py`: checks file references, counts, and known patient-group leakage.
+The system extracts information from PDFs, reconstructs document structure, classifies documents, extracts relevant claim fields, and verifies consistency and documentation requirements across multiple documents.
 
-## Portable file references
+The goal is to assist insurance claims handlers by identifying missing information, conflicting details, and supporting evidence.
 
-Generated JSONL records were rewritten from absolute `/Users/.../Downloads/new_clinical_collection/downloaded_datasets/...` paths to relative `data/raw/...` paths where applicable. Raw files remain unchanged. Always resolve image or PDF paths relative to the **project root**.
+**Scope:** This system supports claims-document review. It does not automatically approve, deny, or adjudicate insurance claims.
+
+## 1. Current Capabilities
+
+| Component | Status |
+|---|---|
+| Digital PDF extraction | Implemented |
+| Tesseract OCR fallback | Implemented |
+| Text normalization | Implemented |
+| Layout and paragraph extraction | Implemented |
+| Extraction quality validation | Implemented |
+| SLM heading classification | Implemented |
+| Section segmentation | Implemented |
+| Section-aware chunking | Implemented |
+| Document classification | Implemented |
+| Structured field extraction | Implemented |
+| Evidence recovery | Implemented |
+| Deterministic field validation | Implemented |
+| Cross-document verification | Implemented |
+| AND/OR requirement evaluation | Implemented |
+| Document-scoped requirement verification | Implemented |
+| Complete claim-package pipeline | Implemented |
+| Requirement-level evidence tracking | In progress |
+| Policy-specific rule extraction | Planned |
+
+## 2. System Architecture
+
+```text
+INPUT: Claim Package (Multiple PDFs)
+                 |
+                 v
+        DOCUMENT PREPROCESSING
+        ----------------------
+        Digital PDF Extraction
+        OCR Fallback (Tesseract)
+        Text Normalization
+        Layout Reconstruction
+        Quality Validation
+                 |
+                 v
+        DOCUMENT SEGMENTATION
+        ---------------------
+        SLM Heading Detection
+        Section Identification
+        Section-Aware Chunking
+                 |
+                 v
+        SLM DOCUMENT INTELLIGENCE
+        -------------------------
+        Document Classification
+        Structured Field Extraction
+        Evidence Recovery
+        Field Validation
+                 |
+                 v
+        CLAIM PACKAGE VERIFICATION
+        --------------------------
+        Cross-Document Comparisons
+        Document Requirements
+        Field Requirements
+        AND/OR Rule Evaluation
+                 |
+                 v
+        STRUCTURED VERIFICATION REPORT
+        ------------------------------
+        Extracted Fields
+        Source Evidence
+        Consistent Information
+        Conflicting Information
+        Missing Documentation
+        Review Requirements
+```
+
+The SLM handles tasks requiring document understanding, while deterministic Python logic handles validation, comparisons, and rule evaluation.
+
+## 3. Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| Python | Core processing and verification |
+| PyMuPDF | PDF text and layout extraction |
+| Tesseract / pytesseract | OCR |
+| Ollama | Local model inference |
+| Qwen3 4B Instruct | Document understanding and extraction |
+| Pydantic | Structured SLM responses |
+| ReportLab | Generating synthetic test PDFs |
+| JSON | Structured document and verification outputs |
+
+The current local model is:
+
+`qwen3:4b-instruct`
+
+## 4. Project Structure
+
+```text
+health-insurance-slm/
+├── data/
+│   ├── raw/
+│   │   ├── reference_pdfs/
+│   │   └── synthetic_claims/
+│   └── processed/
+│       ├── batch/
+│       ├── claim_package_test/
+│       └── synthetic_claim_package/
+│
+├── src/
+│   ├── extraction/
+│   │   ├── pdf_extractor.py
+│   │   └── digital_layout.py
+│   │
+│   ├── ocr/
+│   │   └── tesseract_ocr.py
+│   │
+│   ├── preprocessing/
+│   │   ├── coordinates.py
+│   │   ├── document_builder.py
+│   │   ├── text_normalizer.py
+│   │   ├── section_detector.py
+│   │   ├── section_chunker.py
+│   │   └── pipeline.py
+│   │
+│   ├── slm/
+│   │   ├── heading_classifier.py
+│   │   ├── document_classifier.py
+│   │   └── field_extractor.py
+│   │
+│   ├── verification/
+│   │   ├── extraction_quality.py
+│   │   ├── evidence_matcher.py
+│   │   ├── field_validator.py
+│   │   ├── cross_document.py
+│   │   ├── requirements.py
+│   │   └── requirement_rules.py
+│   │
+│   └── pipeline/
+│       └── claim_pipeline.py
+│
+└── tests/
+    ├── test_preprocessing_pipeline.py
+    ├── test_batch_preprocessing.py
+    ├── test_document_classifier.py
+    ├── test_field_extractor.py
+    ├── test_field_extractor_positive.py
+    ├── test_field_extractor_robustness.py
+    ├── test_cross_document.py
+    ├── test_claim_pipeline.py
+    ├── generate_synthetic_claims.py
+    ├── test_synthetic_claim_packages.py
+    ├── test_requirements.py
+    ├── test_requirement_fields.py
+    ├── test_requirement_documents.py
+    └── test_document_scoped_requirements.py
+```
+
+## 5. Setup
+
+### Prerequisites
+
+- Python 3
+- Tesseract OCR
+- Ollama
+- Qwen3 4B Instruct
+
+Download the model:
+
+```bash
+ollama pull qwen3:4b-instruct
+```
+
+Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install the core dependencies:
+
+```bash
+pip install pymupdf pytesseract pillow ollama pydantic reportlab
+```
+
+Ensure Ollama is running locally at:
+
+`http://localhost:11434`
+
+Use the repository's dependency manifest, if available, to reproduce the complete development environment.
+
+## 6. Document Preprocessing
+
+The preprocessing pipeline converts raw PDFs into structured JSON.
+
+### Processing Steps
+
+1. Detect whether the PDF contains extractable digital text.
+2. Apply Tesseract OCR when necessary.
+3. Normalize extracted text.
+4. Extract layout information, paragraphs, and bounding boxes.
+5. Evaluate extraction quality.
+6. Identify headings using the SLM.
+7. Segment the document into sections.
+8. Generate section-aware chunks.
+
+### Run Preprocessing
+
+```bash
+python -m tests.test_preprocessing_pipeline
+```
+
+### Run Batch Processing
+
+```bash
+python -m tests.test_batch_preprocessing
+```
+
+### Inspect Segmentation Results
+
+```bash
+python -m tests.inspect_preprocessing
+```
+
+The pipeline preserves document metadata, page references, source line information, and extracted content.
+
+## 7. Document Classification
+
+The SLM classifies documents based on their primary purpose.
+
+### Supported Categories
+
+- `claim_form`
+- `hospital_bill`
+- `physician_statement`
+- `discharge_summary`
+- `investigation_report`
+- `prescription`
+- `claims_checklist`
+- `policy_document`
+- `other`
+- `unknown`
+
+The classifier uses structured JSON responses with supporting evidence and a review flag.
+
+Document titles are considered alongside the document's content to avoid confusing claim forms containing charges with hospital bills.
+
+### Run Classification Test
+
+```bash
+python -m tests.test_document_classifier
+```
+
+## 8. Structured Field Extraction
+
+The SLM extracts populated claim information from documents.
+
+### Supported Fields
+
+| Field | Description |
+|---|---|
+| patient_name | Name of the patient |
+| policy_number | Insurance policy identifier |
+| hospital_name | Treating hospital or facility |
+| admission_date | Hospital admission date |
+| discharge_date | Hospital discharge date |
+| diagnosis | Documented medical diagnosis |
+| total_amount | Total monetary amount |
+| currency | Explicitly identified currency |
+
+Field extraction is currently performed page by page.
+
+Each accepted field contains:
+
+- Field name
+- Extracted value
+- Supporting evidence
+- Page number
+- Review flag
+
+### Evidence Recovery
+
+If the SLM identifies a value but produces incorrectly formatted evidence, the evidence matcher attempts to recover an exact source excerpt.
+
+Recovery only occurs when the value can be uniquely located in the source text.
+
+### Field Validation
+
+The deterministic validator rejects unsupported candidates, including:
+
+- Empty values and placeholders
+- Empty form labels mistaken for populated values
+- Invalid date formats
+- Invalid monetary amounts
+- Multiline collections of form labels mistaken for names
+- Policy identifiers without sufficient supporting context
+
+Rejected fields are currently logged to the terminal.
+
+### Run Extraction Tests
+
+```bash
+python -m tests.test_field_extractor
+python -m tests.test_field_extractor_positive
+python -m tests.test_field_extractor_robustness
+```
+
+## 9. Cross-Document Verification
+
+The system compares extracted fields from different documents belonging to the same claim.
+
+### Compared Fields
+
+- Patient name
+- Policy number
+- Hospital name
+- Admission date
+- Discharge date
+
+Date values are normalized before comparison.
+
+### Verification Statuses
+
+| Status | Meaning |
+|---|---|
+| `consistent` | At least two distinct documents contain matching normalized values |
+| `conflict` | At least two distinct documents contain differing values |
+| `insufficient_evidence` | Fewer than two distinct documents provide the field |
+
+For example:
+
+```text
+Claim Form:
+Discharge Date = 10/07/2026
+
+Physician Statement:
+Discharge Date = 10/08/2026
+
+Result:
+conflict
+```
+
+A conflict indicates that the information requires review. It does not automatically mean that a claim should be rejected.
+
+### Run Verification Test
+
+```bash
+python -m tests.test_cross_document
+```
+
+## 10. Documentation Requirement Verification
+
+The system also checks whether a claim package contains required supporting documentation.
+
+This is separate from cross-document consistency verification.
+
+### Supported Requirement Operations
+
+| Operation | Purpose |
+|---|---|
+| `document` | Verify a document type is present |
+| `field` | Verify a field is present |
+| `document_with_fields` | Verify one document contains specific fields |
+| `AND` | Require all conditions |
+| `OR` | Require at least one condition |
+
+### Document-Scoped Requirements
+
+Fields must belong to the appropriate document when a requirement specifies `document_with_fields`.
+
+For example, a diagnosis found in a hospital bill cannot satisfy a requirement for a physician statement containing a diagnosis.
+
+### Current Demonstration Rule
+
+The initial hospitalization rule supports these alternatives:
+
+```text
+UB-04 Form
+
+OR
+
+Physician Statement
+    AND
+Diagnosis Field
+
+OR
+
+Room-and-Board Documentation
+    AND
+Medical Codes Documentation
+```
+
+This is a simplified demonstration rule, not a complete or authoritative representation of Cigna's coverage or documentation requirements.
+
+Rules are currently defined in:
+
+`src/verification/requirement_rules.py`
+
+The evaluation engine is located in:
+
+`src/verification/requirements.py`
+
+### Run Requirement Tests
+
+```bash
+python -m tests.test_requirements
+python -m tests.test_requirement_fields
+python -m tests.test_document_scoped_requirements
+```
+
+## 11. Complete Claim Package Pipeline
+
+The claim-package pipeline combines all the implemented components.
+
+### Processing Flow
+
+1. Receive multiple PDF documents.
+2. Preprocess each PDF.
+3. Classify each document.
+4. Extract and validate structured fields.
+5. Compare shared fields across documents.
+6. Evaluate documentation requirements.
+7. Return a structured verification report.
+
+### Example Usage
 
 ```python
-from pathlib import Path
-project_root = Path.cwd()  # run scripts from the project root
-image = project_root / record['image_path']
+from src.pipeline.claim_pipeline import process_claim_package
+
+result = process_claim_package(
+    file_paths=[
+        "data/raw/synthetic_claims/claim_form.pdf",
+        "data/raw/synthetic_claims/physician_statement.pdf"
+    ],
+    output_dir="data/processed/synthetic_claim_package"
+)
+
+print(result["verification"])
+print(result["requirements"])
 ```
 
-## Quick checks
+**Assumption:** All supplied documents belong to the same claim. Automated claim-package association has not yet been implemented.
 
-From the extracted `health-insurance-slm/` directory:
+### Run Full Integration Test
 
 ```bash
-python3 tests/validate_dataset.py
+python -m tests.test_claim_pipeline
 ```
 
-## OCR starting point
-
-Read `data/splits/noisy_images_train.jsonl`, then resolve each record's `image_path` relative to the project root. Keep validation/test files out of model training. Original images in `data/raw/noisy/bills/` and `data/raw/noisy/discharge_summaries/` are essential: JSONL alone is not sufficient for OCR.
-
-## Important limitations
-
-- The noisy document images are synthetic, with published labels not independently audited for clinical correctness.
-- The linked PDF benchmark contains only five underlying simulated patients; a held-out patient is a smoke test, not a robust generalization estimate.
-- The 24 insurance verification scenarios are rules-generated and not independent insurer-verified examples.
-- MTSamples specialties are not confirmed document types.
-- The Harvard summaries and NLM radiology reports have reuse restrictions; verify rights before model training or redistribution. The Cigna forms are proprietary reference materials.
-- No PHI-sensitive client data, trained model, OCR inference results, or end-to-end claims adjudication system is provided.
-- Any existing provenance or metadata may still refer to original local source locations in free-text descriptions; standardized path-valued fields were updated.
-
-## Sectioning regression checks
-
-Run from the project root (no Ollama required):
+### Run Synthetic Claim Package Test
 
 ```bash
-.venv/bin/python -m unittest discover -s tests/regression -v
+python -m tests.generate_synthetic_claims
+python -m tests.test_synthetic_claim_packages
 ```
 
-Digital and OCR lines are ordered using whitespace gutters and horizontal bands before heading classification. Original extraction IDs and bounding boxes are retained; prediction IDs refer to the resulting page line order. The original digital `raw_text` remains unchanged.
+## 12. Testing Results
 
-Section boundaries validate model predictions against formatting, continuation text, form fields, and neighboring logical separators. Explicit numbered `SECTION` headings are retained even when the model misses them. Paragraphs and sections containing standalone `OR` alternatives stay together during chunking. These units may exceed `max_words`; `oversized` makes this explicit, and `word_count` includes the repeated heading. Heading-only sections also produce chunks.
+### Reference Document Preprocessing
 
-To regenerate existing outputs with fresh model predictions, start Ollama with the configured Qwen model available, then run:
+| Document | Pages | Chunks |
+|---|---:|---:|
+| Cigna Hospital Care Checklist | 1 | 5 |
+| Cigna Hospital Care Claim Form | 7 | 32 |
+| Cigna Physician Statement | 4 | 20 |
+| NAIC Claims Guide | 2 | 3 |
+| **Total** | **14** | **60** |
 
-```bash
-.venv/bin/python -m tests.test_batch_preprocessing
-.venv/bin/python -m tests.inspect_preprocessing
-```
+All four reference PDFs completed batch preprocessing successfully.
 
-The regressions cover the reported Cigna failures and pipeline output using deliberately incorrect heading predictions. They do not establish general accuracy on unseen layouts. Whitespace ordering is heuristic, section boundaries are conservative, and conditional groups spanning pages still require document-level handling. The extraction `quality.status` does not measure semantic sectioning accuracy.
+Chunk counts may vary after changes to segmentation, chunking parameters, or SLM predictions.
 
-## React + Vite frontend and FastAPI backend
+### Field Extraction Tests
 
-Install backend dependencies from the project root:
+**Simple synthetic claim**
 
-```bash
-.venv/bin/pip install -r requirements.txt
-```
+- 8/8 expected fields extracted correctly.
 
-Start the FastAPI API in one terminal:
+**Robustness test**
 
-```bash
-.venv/bin/python -m uvicorn src.web.server:app --host 127.0.0.1 --port 8000
-```
+- 7/7 expected fields extracted correctly.
+- No forbidden values accepted.
+- Unsupported currency values rejected.
 
-Start React with Vite in another terminal:
+**Blank reference forms**
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+- Cigna claim form: 0 accepted populated fields.
+- Cigna physician statement: 0 accepted populated fields.
 
-Open the Vite URL (normally `http://127.0.0.1:5173`). Vite proxies `/api` requests to FastAPI on port 8000. Ollama must be running with `qwen3:4b-instruct` available. Upload PDFs for one claim package and click **Verify package** to see the current hospitalization rule, extracted field evidence, review flags, and cross-document checks. JSON results can be downloaded.
+### Synthetic Claim Package
 
-The API accepts up to 10 PDFs totaling 30 MB, with up to 50 pages per PDF. One package processes at a time. Upload files are temporary; the latest ten job results remain in backend memory. The current classifier does not support every document type named in the requirement rule; the UI exposes this limitation. Documentation results are not claim approval decisions.
+Two synthetic PDF documents were generated:
 
-Build the frontend with `cd frontend && npm run build`. Run API tests with `.venv/bin/python -m unittest discover -s tests/regression -p test_web.py -v` from the project root.
+- Hospital claim form
+- Physician statement
+
+Both contained the same patient and hospital information, but intentionally conflicting discharge dates.
+
+### Verification Results
+
+| Field | Result |
+|---|---|
+| Patient name | Consistent |
+| Hospital name | Consistent |
+| Admission date | Consistent |
+| Discharge date | Conflict |
+| Policy number | Insufficient evidence |
+
+The classifier correctly identified both synthetic document types after prompt refinement.
+
+### Requirement Verification
+
+The demonstration requirement was satisfied because the synthetic physician statement contained a populated diagnosis field.
+
+All document-scoped requirement tests passed.
+
+These are functional POC test results, not statistically representative accuracy measurements.
+
+## 13. Known Limitations
+
+### Document Processing
+
+- Multi-column reading order is not fully solved.
+- Section boundaries may occasionally be incorrect.
+- Cross-page section continuity is not yet supported.
+- Complex conditional documentation requirements may be split during chunking.
+
+### Field Extraction
+
+- Evidence matching confirms textual presence, not necessarily semantic correctness.
+- Unconventional field formats may be rejected.
+- Page-by-page extraction may miss cross-page context.
+- Rejected candidates are not yet stored in a structured audit report.
+
+### Classification
+
+- Some document subtypes are not independently recognized.
+- A generic hospital bill is not necessarily a UB-04 form.
+- More labeled examples are required to measure classification reliability.
+
+### Requirement Verification
+
+- Rules are currently manually defined.
+- Insurer-specific policy versions and effective dates are not integrated.
+- Requirement applicability conditions are not fully represented.
+- Requirement-level evidence tracking is being developed.
+- Requirement satisfaction does not establish medical necessity or insurance coverage.
+
+### Production Readiness
+
+- Real claim-package membership validation is not implemented.
+- Production authentication and authorization are not implemented.
+- Privacy and security controls require further development.
+- Human review workflows are not yet implemented.
+- Broader evaluation on representative authorized datasets is required.
+
+## 14. Next Steps
+
+1. Complete requirement-level evidence tracking with document IDs, page numbers, and supporting excerpts.
+2. Improve document-subtype detection, including UB-04 identification.
+3. Extract documentation requirements from insurer checklists and policy documents.
+4. Store rules with insurer identifiers, policy versions, effective dates, and source evidence.
+5. Implement claim-specific applicability conditions.
+6. Expand structured extraction for hospitalization, surgery, and medicine coverage verification.
+7. Create a labeled evaluation dataset and measure classification, extraction, and verification performance.
+8. Add structured audit logging and human-review workflows.
+
+## 15. Project Principles
+
+**Evidence First**
+
+Every extracted field and verification result should be traceable to supporting document evidence.
+
+**SLM for Understanding, Rules for Verification**
+
+Use the SLM to interpret unstructured documents and extract information. Use deterministic logic to evaluate explicit requirements and detect conflicts.
+
+**Insurer-Independent Core**
+
+Keep generic preprocessing and validation logic separate from insurer-specific policies and exceptions.
+
+**Human-in-the-Loop**
+
+The system assists claims handlers by surfacing evidence, inconsistencies, and missing requirements. It does not make autonomous claim approval or denial decisions.
