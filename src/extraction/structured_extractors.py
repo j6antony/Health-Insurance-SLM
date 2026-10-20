@@ -139,37 +139,65 @@ def extract_txt(file_path):
 def extract_word(file_path):
     document = Document(file_path)
     content = []
+    line_metadata = []
     tables = []
 
-    # Extract paragraphs
-    for paragraph in document.paragraphs:
-        if paragraph.text.strip():
-            content.append(paragraph.text)
+    # Keep paragraph and table order as it appears in the document body.
+    # A logical 'page' is not a physical Word page.
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
-    # Extract tables
-    for table_number, table in enumerate(document.tables, start=1):
-        table_rows = []
+    paragraph_num = 0
+    table_num = 0
 
-        content.append(f"Table {table_number}")
-
-        for row_number, row in enumerate(table.rows, start=1):
-            values = [cell.text for cell in row.cells]
-            table_rows.append(values)
-
-            content.append(
-                f"Row {row_number}: " + " | ".join(values)
+    for element in document.element.body.iterchildren():
+        if element.tag == qn("w:p"):
+            paragraph = Paragraph(element, document)
+            paragraph_num += 1
+            if not paragraph.text.strip():
+                continue
+            style = paragraph.style.name if paragraph.style else ""
+            is_heading = style.lower().startswith(("heading", "title", "subtitle"))
+            is_bold = is_heading or bool(
+                paragraph.runs and all(
+                    run.bold is True for run in paragraph.runs if run.text.strip()
+                )
             )
+            content.append(paragraph.text)
+            line_metadata.append({
+                "type": "docx_paragraph",
+                "paragraph_number": paragraph_num,
+                "style": style,
+                "is_bold": is_bold,
+            })
+        elif element.tag == qn("w:tbl"):
+            table_num += 1
+            table = Table(element, document)
+            table_rows = []
+            content.append(f"Table {table_num}")
+            line_metadata.append({"type": "docx_table", "table": table_num})
 
-        tables.append({
-            "table_number": table_number,
-            "rows": table_rows
-        })
+            for row_number, row in enumerate(table.rows, start=1):
+                values = [cell.text for cell in row.cells]
+                table_rows.append(values)
+                content.append(
+                    f"Row {row_number}: " + " | ".join(values)
+                )
+                line_metadata.append({
+                    "type": "docx_table_row",
+                    "table": table_num,
+                    "row": row_number,
+                })
+            tables.append({
+                "table_number": table_num,
+                "rows": table_rows,
+            })
 
     return {
-        "text": "\n".join(content),
-        "structured_data": {
-            "tables": tables
-        }
+        "text": "\\n".join(content),
+        "structured_data": {"tables": tables},
+        "line_metadata": line_metadata,
     }
 
 
