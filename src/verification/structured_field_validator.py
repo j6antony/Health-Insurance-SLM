@@ -51,6 +51,37 @@ def validate_record(record):
                 "source": field["source"]
             })
 
+    # Validate basic cross-field chronology without guessing missing dates.
+    date_formats = (
+        "%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y",
+        "%m-%d-%Y", "%B %d, %Y",
+    )
+    def parse_date(value):
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(str(value).strip(), fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    valid_dates = {
+        field["field_name"]: parse_date(field["value"])
+        for field in record["fields"]
+        if field["field_name"] in {"admission_date", "discharge_date"}
+        and field.get("validation_status") == "valid"
+    }
+    admission = valid_dates.get("admission_date")
+    discharge = valid_dates.get("discharge_date")
+    if admission and discharge and discharge < admission:
+        issues.append({
+            "type": "discharge_before_admission",
+            "admission_date": admission.isoformat(),
+            "discharge_date": discharge.isoformat(),
+        })
+        for field in record["fields"]:
+            if field["field_name"] in {"admission_date", "discharge_date"}:
+                field["requires_review"] = True
+
     record["issues"] = issues
     record["requires_review"] = (
         bool(issues)
