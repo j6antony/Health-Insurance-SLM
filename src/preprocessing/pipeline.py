@@ -10,6 +10,7 @@ from src.verification.structured_field_validator import validate_structured_mapp
 from src.slm.field_extractor import extract_document_fields
 from src.verification.extraction_quality import evaluate_document_quality
 from src.extraction.structured_field_mapper import map_structured_fields
+from src.extraction.structured_record_classifier import classify_structured_mapping
 def preprocess_document(file_path, output_path= None, max_words = 300):
    
     document = process_document(file_path)
@@ -27,6 +28,7 @@ def preprocess_document(file_path, output_path= None, max_words = 300):
 
         mapping = map_structured_fields(document)
         mapping = validate_structured_mapping(mapping)
+        mapping = classify_structured_mapping(mapping)
 
         document["structured_mapping"] = mapping
 
