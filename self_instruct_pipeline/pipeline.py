@@ -210,6 +210,13 @@ class Pipeline:
             if answer['scenario_id'] not in by_id or answer['scenario_hash'] != digest(by_id[answer['scenario_id']]):
                 raise ValueError('Existing answer does not match its unchanged scenario')
         done = {r['scenario_id'] for r in existing}
+        feedback_by_id = {}
+        for rejected in self.store.read('rejected_records.jsonl'):
+            proposal = rejected.get('record', {})
+            if rejected.get('phase') == 'answer_validation' and isinstance(proposal, dict):
+                feedback_by_id[proposal.get('scenario_id')] = {
+                    'validation_error': rejected['reason'], 'proposed_answer': proposal.get('answer'),
+                    'audit': proposal.get('audit')}
         failures = 0
         for row in self.accepted:
             if row['id'] in done:
@@ -219,13 +226,14 @@ class Pipeline:
                 answer, audit = None, None
                 try:
                     client = self.client()
-                    answer = client.generate_json(teacher_messages(row, self.schemas), self.schemas[row['task']], 'teacher_answer', temperature=0.0)
+                    messages = teacher_messages(row, self.schemas, feedback_by_id.get(row['id']))
+                    answer = client.generate_json(messages, self.schemas[row['task']], 'teacher_answer', temperature=0.0)
                     validate_answer(row, answer, self.schemas[row['task']])
                     audit = client.generate_json(verification_messages(row, answer, self.schemas), AUDIT_SCHEMA, 'answer_audit', temperature=0.0)
                     validate_audit(audit)
                     record = {'scenario_id': row['id'], 'scenario_hash': digest(row), 'task': row['task'],
                               'answer': answer, 'audit': audit, 'created_at': now(), 'parent': row['parent'],
-                              'teacher_prompt_hash': digest(teacher_messages(row, self.schemas)),
+                              'teacher_prompt_hash': digest(messages),
                               'audit_prompt_hash': digest(verification_messages(row, answer, self.schemas)),
                               'settings': {**self.config['parent'], 'temperature': 0.0},
                               'verification_status': 'automatically_checked_silver'}
@@ -239,6 +247,8 @@ class Pipeline:
                         raise
                 except (ValidationError, KeyError, TypeError) as exc:
                     self.reject('answer_validation', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
+                    feedback_by_id[row['id']] = {'validation_error': str(exc),
+                                                 'proposed_answer': answer, 'audit': audit}
             print(f'Validated answers: {len(done)}/{len(self.accepted)}', flush=True)
             failures = 0 if success else failures + 1
             if failures >= self.config['generation']['max_consecutive_failed_batches']:

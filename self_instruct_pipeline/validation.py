@@ -139,12 +139,16 @@ def validate_answer(record, answer, schema):
         if isinstance(evidence, str):
             if not evidence.strip() or not any(evidence in d['text'] for d in docs.values()):
                 fail('Classification evidence quote not in source')
-        elif evidence['document_id'] not in docs or not evidence['quote'].strip() or evidence['quote'] not in docs[evidence['document_id']]['text']:
-            fail('Evidence document ID or quote invalid')
+        else:
+            doc_id = evidence['document_id']
+            if doc_id not in docs:
+                fail(f'Evidence document ID {doc_id!r} not found; use one of {sorted(docs)}')
+            if not evidence['quote'].strip() or evidence['quote'] not in docs[doc_id]['text']:
+                fail(f'Evidence quote for {doc_id!r} must be a nonempty exact contiguous substring of its source text')
     fields = answer.get('fields', [])
     names = [f['field_name'] for f in fields]
     if len(names) != len(set(names)):
-        fail('Duplicate extracted fields')
+        fail('Duplicate extracted fields: emit at most one entry per field_name; mark a directly supported source value requires_review=true when conflicting')
     target_id = record['scenario']['context'].get('target_document_id')
     for field in fields:
         matches = [d for d in docs.values() if field['evidence'] in d['text'] and d['page_number'] == field['page_number']]

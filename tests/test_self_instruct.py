@@ -312,6 +312,34 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):p.generate()
         self.assertEqual(len(p.accepted),0)
 
+    def test_failed_answer_feedback_survives_resume_and_skips_done(self):
+        class FailingParent(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'teacher_answer' and not hasattr(self, 'failed'):
+                    self.failed = True
+                    value['evidence'][0]['document_id'] = 'WRONG'
+                return value
+        self.config['generation']['max_answer_attempts_per_run'] = 1
+        parent = FailingParent()
+        pipeline = Pipeline(self.config, parent)
+        pipeline.initialize_manifest(); pipeline.generate()
+        with self.assertRaises(ValueError): pipeline.answer()
+        self.assertEqual(len(pipeline.store.read('validated_answers.jsonl')), 1)
+        resumed_parent = MockParent()
+        resumed = Pipeline(self.config, resumed_parent)
+        self.assertEqual(resumed.answer(), 2)
+        calls = [messages for op, messages in resumed_parent.calls if op == 'teacher_answer']
+        self.assertEqual(len(calls), 1)
+        payload = json.loads(calls[0][1]['content'])
+        feedback = payload['previous_attempt_feedback']
+        self.assertIn('WRONG', feedback['validation_error'])
+        self.assertEqual(feedback['proposed_answer']['evidence'][0]['document_id'], 'WRONG')
+        stored = resumed.store.read('validated_answers.jsonl')[-1]
+        self.assertEqual(stored['teacher_prompt_hash'], digest(calls[0]))
+        self.assertNotIn('previous_attempt_feedback', json.loads(verification_messages(
+            resumed.accepted[0], {}, SCHEMAS)[1]['content']))
+
     def test_invalid_teacher_answer_never_exported(self):
         class InvalidAnswerParent(MockParent):
             def generate_json(self,messages,schema,operation='generation',temperature=None):
