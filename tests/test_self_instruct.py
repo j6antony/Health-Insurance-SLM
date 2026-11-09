@@ -340,6 +340,27 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('previous_attempt_feedback', json.loads(verification_messages(
             resumed.accepted[0], {}, SCHEMAS)[1]['content']))
 
+    def test_audit_rejection_feedback_is_used_on_next_attempt(self):
+        class AuditFailParent(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'answer_audit' and not hasattr(self, 'failed_audit'):
+                    self.failed_audit = True
+                    return {**GOOD_AUDIT, 'grounded': False, 'safe_for_synthetic_sft': False,
+                            'reasons': ['Requested approval decision is missing; flag it for review.']}
+                return value
+        self.config['generation']['max_answer_attempts_per_run'] = 2
+        parent = AuditFailParent()
+        pipeline = Pipeline(self.config, parent)
+        pipeline.initialize_manifest(); pipeline.generate()
+        self.assertEqual(pipeline.answer(), 2)
+        calls = [m for op, m in parent.calls if op == 'teacher_answer']
+        feedback = json.loads(calls[1][1]['content'])['previous_attempt_feedback']
+        self.assertEqual(feedback['audit']['reasons'],
+                         ['Requested approval decision is missing; flag it for review.'])
+        self.assertIsNotNone(feedback['proposed_answer'])
+        self.assertEqual(len(pipeline.store.read('validated_answers.jsonl')), 2)
+
     def test_invalid_teacher_answer_never_exported(self):
         class InvalidAnswerParent(MockParent):
             def generate_json(self,messages,schema,operation='generation',temperature=None):

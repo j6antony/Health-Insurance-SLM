@@ -54,6 +54,16 @@ def teacher_messages(record, schemas, feedback=None):
             'Missing is not unreadable; undocumented is not false. '
             'Use the supplied rules for arithmetic and date calculations. For missing required '
             'information use the schema\'s review/missing fields; omit unsupported extraction fields. '
+            'Do not invent a contact role, department, portal, appeal route, deadline, or '
+            'administrative procedure, even as a suggested next step. If a requested route '
+            'is not supplied, say that it is not established and list the missing route '
+            'or applicable procedure as missing information. When the question asks whether '
+            'a claim was approved or denied and the record only shows receipt/pending status, '
+            'state that the decision is not established, list the requested final decision '
+            'in missing_information, and set requires_review=true. An empty missing_information '
+            'array must not conceal a fact needed to answer the actual question. '
+            'If prior feedback includes an audit, address each stated audit reason against '
+            'the sources, as well as any local validation error. '
             'An appeal draft is a proposal for review, never a sent message or clinical determination.')},
         {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
     ]
