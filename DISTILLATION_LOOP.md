@@ -179,3 +179,28 @@ occur. A smoke run cannot establish full-run GPU memory requirements or guarante
 high scores. Before a full experiment, **restart the kernel**, set `TEST_RUN = False`,
 and rerun from the top so the full experiment starts from the base student rather
 than the smoke-trained adapter. The full run uses its separate output folder.
+
+## Filtering failed answers and replacing evaluation cases
+
+The training loop keeps only answers passing both local validation and grounding
+audit. A rejected answer no longer aborts the whole answer pass: the bounded
+attempts finish, and the valid subset is exported and trained. At least half of
+each round's new examples (rounded up, minimum one) must pass; otherwise training
+stops to avoid running a round mostly on old replay data. Each round records
+counts in `training_filter.json`. Raw failed answers remain in the rejection log.
+Authentication, request errors, and API-budget exhaustion still stop the run.
+
+Evaluation retains exact coverage of all 18 tasks. After the initial answer pass,
+it generates replacements only for missing task counts, validates their answers,
+and retains earlier successful examples. `development_fill_attempts` now caps the
+number of replacement passes AFTER the initial pass (one replacement pass for the
+smoke test, three with default full settings). These passes are recorded in
+`development_replacements.json` before calls and persist across resumes; an
+interrupted pass consumes its allowance conservatively. The shared API budget
+still covers every call. If coverage remains incomplete after this limit, the
+loop stops with an error rather than evaluating a smaller task set. Once frozen,
+`development.jsonl` is reused unchanged after every training round.
+
+These changes can resume an existing run with the same configuration and output
+folder. Copy the updated `distillation_loop` and `self_instruct_pipeline` folders
+to Kaggle and restart the kernel. Keep the run's output and budget files intact.

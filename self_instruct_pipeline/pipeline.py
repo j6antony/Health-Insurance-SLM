@@ -116,10 +116,11 @@ class Pipeline:
             atomic_json(self.store.path('parent_model.json'), result)
         return self.parent
 
-    def plan(self, count=None):
+    def plan(self, count=None, task_quotas=None):
         generation = self.config['generation']
         count = count or min(generation['batch_size'], max(1, generation['target_accepted_scenarios'] - len(self.accepted)))
-        quotas = self.scheduler.next_quotas(count, self.rng)
+        quotas = task_quotas if task_quotas is not None else self.scheduler.next_quotas(count, self.rng)
+        count = sum(quotas.values())
         difficulty = apportioned_counts(count, generation['difficulty_weights'], self.rng)
         sampling = self.config['sampling']
         seeds = self.sampler.sample(quotas, self.scheduler, self.accepted, sampling['num_seed_examples'],
@@ -133,11 +134,22 @@ class Pipeline:
         self.store.append('rejected_records.jsonl', {'id': str(uuid.uuid4()), 'timestamp': now(),
                           'phase': phase, 'reason': reason, 'batch_id': batch_id, 'record': record})
 
-    def generate(self):
+    def generate(self, task_targets=None):
         target = self.config['generation']['target_accepted_scenarios']
         failures = 0
         while len(self.accepted) < target:
-            plan = self.plan()
+            quotas = None
+            if task_targets is not None:
+                counts = Counter(r['task'] for r in self.accepted)
+                quotas, remaining = {}, self.config['generation']['batch_size']
+                for task, wanted in task_targets.items():
+                    take = min(remaining, max(0, wanted - counts[task]))
+                    if take:
+                        quotas[task] = take
+                        remaining -= take
+                if not quotas:
+                    raise ValueError('Development task targets disagree with generation target')
+            plan = self.plan(task_quotas=quotas)
             batch_id = str(uuid.uuid4())
             self.store.append('generation_batches.jsonl', {'batch_id': batch_id, 'timestamp': now(),
                               'task_quotas': plan['task_quotas'], 'difficulty': plan['difficulty'], 'seed_ids': plan['seed_ids']})
@@ -203,7 +215,7 @@ class Pipeline:
                 raise ValueError('Stopped after consecutive failed batches; inspect rejected_records.jsonl')
         return len(self.accepted)
 
-    def answer(self):
+    def answer(self, allow_partial=False, scenario_ids=None):
         existing = self.store.unique_records('validated_answers.jsonl', 'scenario_id')
         by_id = {r['id']: r for r in self.accepted}
         for answer in existing:
@@ -219,7 +231,7 @@ class Pipeline:
                     'audit': proposal.get('audit')}
         failures = 0
         for row in self.accepted:
-            if row['id'] in done:
+            if row['id'] in done or (scenario_ids is not None and row['id'] not in scenario_ids):
                 continue
             success = False
             for attempt in range(self.config['generation']['max_answer_attempts_per_run']):
@@ -251,9 +263,9 @@ class Pipeline:
                                                  'proposed_answer': answer, 'audit': audit}
             print(f'Validated answers: {len(done)}/{len(self.accepted)}', flush=True)
             failures = 0 if success else failures + 1
-            if failures >= self.config['generation']['max_consecutive_failed_batches']:
+            if not allow_partial and failures >= self.config['generation']['max_consecutive_failed_batches']:
                 raise ValueError('Stopped after consecutive failed answers; inspect rejected_records.jsonl')
-        if len(done) != len(self.accepted):
+        if not allow_partial and len(done) != len(self.accepted):
             raise ValueError('Some answers failed automatic checks; resume retries unanswered scenarios')
         return len(done)
 

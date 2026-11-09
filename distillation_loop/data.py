@@ -42,26 +42,42 @@ def frozen_development(base_config, loop_config, output_dir, parent=None):
     config['generation']['target_accepted_scenarios']=per_task*len(schemas)
     config['paths']['output_dir']=str(output_dir/'development_generation')
     pipeline=Pipeline(config,parent=parent)
-    target=per_task*len(schemas)
     with pipeline.store.lock():
         pipeline.initialize_manifest()
-        for attempt in range(loop_config['development_fill_attempts']):
-            pipeline.config['generation']['target_accepted_scenarios']=target+attempt*len(schemas)
-            pipeline.generate()
-            pipeline.answer()
-            pairs=checked_pairs(pipeline)
-            counts=Counter(r['task'] for r,a in pairs)
-            if all(counts[t]>=per_task for t in schemas):
-                selected=[];used=Counter()
-                for record,answer in pairs:
-                    if used[record['task']]<per_task:
-                        selected.append({'record':record,'reference':answer})
-                        used[record['task']]+=1
-                atomic_jsonl(path,selected)
-                atomic_json(manifest,{'hash':digest(selected),'examples_per_task':per_task,
-                                      'reference_status':'frozen synthetic development set; not an independent test benchmark'})
-                pipeline.checkpoint()
-                return selected
+        progress_path = output_dir/'development_replacements.json'
+        progress = json.loads(progress_path.read_text()) if progress_path.exists() else {'passes': 0}
+        # One initial pass plus a bounded number of targeted replacement passes.
+        for attempt in range(progress['passes'], loop_config['development_fill_attempts'] + 1):
+            pairs = checked_pairs(pipeline)
+            counts = Counter(r['task'] for r, a in pairs)
+            if all(counts[t] >= per_task for t in schemas):
+                break
+            before = {r['id'] for r in pipeline.accepted}
+            accepted_counts = Counter(r['task'] for r in pipeline.accepted)
+            if attempt == 0:
+                targets = {t: max(per_task, accepted_counts[t]) for t in schemas}
+            else:
+                targets = {t: accepted_counts[t] + max(0, per_task - counts[t]) for t in schemas}
+            # Reserve the pass before API calls; restarting cannot reset the limit.
+            progress['passes'] = attempt + 1
+            atomic_json(progress_path, progress)
+            pipeline.config['generation']['target_accepted_scenarios'] = sum(targets.values())
+            pipeline.generate(task_targets=targets)
+            ids = None if attempt == 0 else {r['id'] for r in pipeline.accepted} - before
+            pipeline.answer(allow_partial=True, scenario_ids=ids)
+        pairs = checked_pairs(pipeline)
+        counts = Counter(r['task'] for r, a in pairs)
+        if all(counts[t]>=per_task for t in schemas):
+            selected=[];used=Counter()
+            for record,answer in pairs:
+                if used[record['task']]<per_task:
+                    selected.append({'record':record,'reference':answer})
+                    used[record['task']]+=1
+            atomic_jsonl(path,selected)
+            atomic_json(manifest,{'hash':digest(selected),'examples_per_task':per_task,
+                                  'reference_status':'frozen synthetic development set; not an independent test benchmark'})
+            pipeline.checkpoint()
+            return selected
     raise ValueError('Unable to fill every development task within the configured attempt limit')
 
 
@@ -91,5 +107,5 @@ class CurriculumData:
         return p.accepted
 
     def answer_pairs(self):
-        self.pipeline.answer();self.pipeline.export();self.pipeline.checkpoint()
+        self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()
         return checked_pairs(self.pipeline)

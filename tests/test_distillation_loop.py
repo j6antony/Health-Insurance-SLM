@@ -224,6 +224,24 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn('raw',answer)
             self.assertNotIn('purpose',answer)
 
+    def test_filters_invalid_training_pairs_and_keeps_good_subset(self):
+        self.config['max_rounds'] = 1
+        original = FakeCurriculum.answer_pairs
+        with patch.object(FakeCurriculum, 'answer_pairs', lambda data: original(data)[:1]):
+            runtime = FakeRuntime()
+            result = self.run_loop(runtime, FakeEvaluator([.1, .95]))
+        self.assertEqual(result['completed_rounds'], 1)
+        self.assertEqual(len(runtime.trains[0]), 1)
+        summary = json.loads((Path(self.tmp.name)/'round_01/training_filter.json').read_text())
+        self.assertEqual(summary['filtered'], 1)
+
+    def test_empty_training_subset_never_reaches_trainer(self):
+        with patch.object(FakeCurriculum, 'answer_pairs', lambda data: []):
+            runtime = FakeRuntime()
+            with self.assertRaisesRegex(ValueError, 'Too few validated'):
+                self.run_loop(runtime, FakeEvaluator([.1]))
+        self.assertEqual(runtime.trains, [])
+
     def test_bad_baseline_does_not_start_training(self):
         class BadEvaluator:
             def evaluate(self,*args):return report(float('nan'))

@@ -118,11 +118,17 @@ def _run_loop(runtime, parent_config, config):
 
                 # 3. Get validated parent answers. Only these become SFT labels.
                 pairs = data.answer_pairs()
-                if len(pairs) != target:
-                    raise ValueError('Missing validated parent targets')
+                new_ids = {record['id'] for record in new_records}
+                new_pairs = [(record, answer) for record, answer in pairs if record['id'] in new_ids]
+                minimum = max(1, (len(new_records) + 1) // 2)
+                atomic_json(directory / 'training_filter.json', {
+                    'generated': len(records), 'validated': len(pairs),
+                    'filtered': len(records) - len(pairs),
+                    'new_validated': len(new_pairs), 'minimum_new_required': minimum})
+                if len(new_pairs) < minimum:
+                    raise ValueError(f'Too few validated new training examples: {len(new_pairs)}/{len(new_records)}; require at least {minimum}')
                 if not config['training']['replay_previous_rounds']:
-                    new_ids = {record['id'] for record in new_records}
-                    pairs = [(record, answer) for record, answer in pairs if record['id'] in new_ids]
+                    pairs = new_pairs
 
                 # 4. Train the existing student adapter, then evaluate it.
                 checkpoint = runtime.train(pairs, schemas, directory / 'sft')
