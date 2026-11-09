@@ -1,9 +1,4 @@
-batch_dir=data/gpt3_generations/
-
-python self_instruct/generate_instances.py \
-    --batch_dir ${batch_dir} \
-    --input_file machine_generated_instructions.jsonl \
-    --output_file machine_generated_instances.jsonl \
-    --max_instances_to_gen 5 \
-    --engine "davinci" \
-    --request_batch_size 5
+#!/usr/bin/env bash
+set -euo pipefail
+workspace_root="$(cd -- "$(dirname -- "$0")/../../.." && pwd)"
+exec python3 "$workspace_root/run_self_instruct.py" answer "$@"

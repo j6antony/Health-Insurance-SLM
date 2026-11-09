@@ -1,6 +1,4 @@
-batch_dir=data/gpt3_generations/
-
-python self_instruct/identify_clf_or_not.py \
-    --batch_dir ${batch_dir} \
-    --engine "davinci" \
-    --request_batch_size 5
+#!/usr/bin/env bash
+set -euo pipefail
+printf "%s\n" "This legacy GPT-3 stage is disabled. Use run_self_instruct.py; task labels and schemas are explicit, and student training runs separately." >&2
+exit 2

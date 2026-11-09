@@ -42,6 +42,8 @@ Diagnosis and supply-code examples use explicitly fictional, non-billable DX-/EQ
 
 ## Use in the loop
 
+The active automated runner is now `run_self_instruct.py`; see `../../SELF_INSTRUCT.md`. It does not require human approval and exports only scenario/answer pairs that pass its automatic checks. The manual-review steps below remain optional quality guidance; the original seeds retain their honest `ai_drafted_unreviewed` status. The runner does not automatically export those seed reference answers as training targets.
+
 1. Review the seed outputs and task contracts. Every row starts `ai_drafted_unreviewed`; record corrections and approval in the annotated file or a separate review log. No reviewer approval is claimed here.
 2. Use `seed_tasks.jsonl` if adapting the original repository's seed loader. The record shape extends the [original seed file](https://github.com/yizhongw/self-instruct/blob/main/data/seed_tasks.jsonl) with `task`; retain this field in sampling, routing, and evaluation. A strict legacy consumer may need to ignore that additional field. No runtime compatibility claim is made for its legacy API implementation.
 3. For a custom generator, sample 6-8 examples from the annotated pack, including contrasting behaviors. Pass only task, instruction, input, and output as demonstrations; keep review/provenance metadata out of model inputs. Prefer reviewed seeds once available.

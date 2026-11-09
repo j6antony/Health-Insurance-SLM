@@ -1,0 +1,37 @@
+{
+  "sampling": {
+    "mode": "balanced",
+    "num_seed_examples": 8,
+    "machine_demonstration_fraction": 0.25,
+    "random_seed": 42
+  },
+  "generation": {
+    "batch_size": 8,
+    "target_accepted_scenarios": 120,
+    "max_retries_per_batch": 2,
+    "max_consecutive_failed_batches": 6,
+    "difficulty_weights": {"easy": 1, "medium": 2, "hard": 1},
+    "task_weights": {"claim_scrubbing": 3, "document_classification": 2, "field_extraction": 2},
+    "duplicate_rouge_threshold": 0.9,
+    "duplicate_context_threshold": 0.88,
+    "semantic_duplicate_threshold": 0.85,
+    "max_answer_attempts_per_run": 2
+  },
+  "parent": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash",
+    "api_key_env": "GEMINI_API_KEY",
+    "max_output_tokens": 12000,
+    "temperature": 0.7,
+    "timeout_seconds": 120,
+    "max_retries": 3
+  },
+  "student": {"model": "Qwen/Qwen3-8B", "training_in_separate_pipeline": true},
+  "paths": {
+    "seeds": "data/self_instruct/seed_tasks.jsonl",
+    "schemas": "data/self_instruct/task_schemas.json",
+    "generation_prompt": "data/self_instruct/GENERATION_PROMPT.md",
+    "references": null,
+    "output_dir": "outputs/self_instruct"
+  }
+}
