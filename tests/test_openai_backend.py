@@ -87,6 +87,24 @@ class OpenAIBackendTests(unittest.TestCase):
         with patch.dict(os.environ,{},clear=True),self.assertRaisesRegex(ParentError,'OPENAI_API_KEY'):
             create_parent(load_config()['parent'])
 
+    def test_bad_request_diagnostics_do_not_expose_body_or_key(self):
+        logs, calls = [], []
+        def rejected(request, timeout):
+            calls.append(1)
+            body = {'error': {'type': 'invalid_request_error', 'code': 'unsupported_parameter',
+                              'param': 'service_tier', 'message': 'PRIVATE CLAIM and TEST_SECRET'}}
+            raise urllib.error.HTTPError(request.full_url, 400, 'Bad Request', {},
+                                         io.BytesIO(json.dumps(body).encode()))
+        client = OpenAIParent(load_config()['parent'], api_key='TEST_SECRET', opener=rejected,
+                              logger=logs.append)
+        with self.assertRaisesRegex(ParentError, 'error_param=service_tier') as caught:
+            client.generate_json(MESSAGES, {'type':'object'})
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(logs[0]['error_code'], 'unsupported_parameter')
+        self.assertNotIn('PRIVATE CLAIM', str(caught.exception) + json.dumps(logs))
+        self.assertNotIn('TEST_SECRET', str(caught.exception) + json.dumps(logs))
+
     def test_openai_retry_and_auth_failures(self):
         attempts=[]
         def limited(request,timeout):

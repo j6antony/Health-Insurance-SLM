@@ -11,7 +11,7 @@ from .persistence import Store, now
 PRICING_SOURCE = 'https://developers.openai.com/api/docs/models/gpt-6-luna'
 RATES = {('openai', 'gpt-6-luna'): ('0.10', '0.01', '0.50', '0.125')}
 FIELDS = ['timestamp', 'finished_at', 'provider', 'model', 'operation', 'attempt',
-          'status', 'http_status', 'response_status', 'response_id', 'duration_seconds',
+          'status', 'http_status', 'error_type', 'error_code', 'error_param', 'response_status', 'response_id', 'duration_seconds',
           'input_tokens', 'cached_input_tokens', 'cache_write_tokens', 'output_tokens',
           'reasoning_tokens', 'total_tokens', 'estimated_cost_usd', 'cost_status',
           'input_usd_per_million', 'cached_input_usd_per_million',

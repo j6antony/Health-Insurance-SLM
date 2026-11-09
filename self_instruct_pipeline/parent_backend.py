@@ -1,6 +1,7 @@
 """OpenAI/Gemini clients. Credentials stay in memory/environment, never URLs or logs."""
 import json
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -61,11 +62,26 @@ class JSONParent:
             except urllib.error.HTTPError as exc:
                 transient = exc.code == 429 or 500 <= exc.code < 600
                 retry_after = exc.headers.get('Retry-After', '') if exc.headers else ''
-                exc.close()
-                # Provider bodies can reflect request data; log status codes only.
-                log('http_error', http_status=exc.code)
+                # Keep structured diagnostics, never the raw error body/message:
+                # provider messages can echo source documents or credentials.
+                details = {}
+                try:
+                    error = json.loads(exc.read(65536)).get('error', {})
+                    if isinstance(error, dict):
+                        for key in ('type', 'code', 'param'):
+                            value = error.get(key)
+                            if (isinstance(value, str) and self._key not in value
+                                    and re.fullmatch(r'[A-Za-z0-9_.\[\]-]{1,100}', value)):
+                                details['error_' + key] = value
+                except (ValueError, TypeError, AttributeError, OSError):
+                    pass
+                finally:
+                    exc.close()
+                log('http_error', http_status=exc.code, **details)
                 if not transient or attempt == self.settings['max_retries']:
-                    raise ParentError(f'{self.NAME} HTTP {exc.code} during {operation}', transient) from None
+                    diagnostic = ', '.join(f'{key}={value}' for key, value in details.items())
+                    suffix = f' ({diagnostic})' if diagnostic else ''
+                    raise ParentError(f'{self.NAME} HTTP {exc.code} during {operation}{suffix}', transient) from None
                 delay = min(30, float(retry_after)) if retry_after.isdigit() else min(30, 2 ** attempt)
                 self._sleep(delay)
             except (urllib.error.URLError, TimeoutError, OSError):
