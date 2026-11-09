@@ -18,7 +18,7 @@ from .validation import (ValidationError, validate_answer, validate_audit, valid
 
 
 class Pipeline:
-    def __init__(self, config, parent=None):
+    def __init__(self, config, parent=None, exclusions=()):
         self.config = config
         self.seeds = read_jsonl(resolve_path(config['paths']['seeds']))
         self.schemas = json.loads(resolve_path(config['paths']['schemas']).read_text())['tasks']
@@ -45,6 +45,9 @@ class Pipeline:
         self.scheduler = WeightedDeficitScheduler(self.schemas, config['generation']['task_weights'])
         self.store = Store(resolve_path(config['paths']['output_dir']))
         self.parent = parent
+        # Held-out records are used only for local duplicate checks. They must
+        # never join demonstrations, prompts, or model-based novelty comparisons.
+        self.exclusions = list(exclusions)
         self.model_checked = False
         self.accepted = self.store.unique_records('accepted_scenarios.jsonl', 'id')
         if len({r['fingerprint'] for r in self.accepted}) != len(self.accepted):
@@ -58,6 +61,9 @@ class Pipeline:
                                  config['generation']['duplicate_rouge_threshold'],
                                  config['generation']['duplicate_context_threshold'],
                                  config['generation']['semantic_duplicate_threshold'])
+        self.exclusion_dedup = Deduplicator(self.exclusions,
+                                            config['generation']['duplicate_rouge_threshold'],
+                                            config['generation']['duplicate_context_threshold'])
 
     def _contract(self):
         # Target size can increase on resume without invalidating earlier data.
@@ -65,7 +71,8 @@ class Pipeline:
         config['generation'].pop('target_accepted_scenarios')
         config['paths'].pop('output_dir')
         return digest({'config': config, 'seeds': self.seeds, 'schemas': self.schemas,
-                       'system_prompt': self.system, 'references': self.references})
+                       'system_prompt': self.system, 'references': self.references,
+                       **({'exclusion_hash': digest(self.exclusions)} if self.exclusions else {})})
 
     def initialize_manifest(self):
         path = self.store.path('run_manifest.json')
@@ -161,6 +168,8 @@ class Pipeline:
                     for row in records:
                         audit = by_id[row['generation_id']]
                         reason = self.dedup.check(row)
+                        if self.exclusion_dedup.check(row):
+                            reason = 'held_out_overlap'
                         if audit['duplicate_of']:
                             reason = 'semantic_duplicate:' + audit['duplicate_of']
                         if not audit['usable'] or reason:

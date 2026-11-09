@@ -29,3 +29,7 @@ python3 run_self_instruct.py dry-run
 ```
 
 With `GEMINI_API_KEY` set in the environment, `python3 run_self_instruct.py all` runs the configured generation/answer/export stages. Student training remains separate.
+
+## Notebook distillation loop
+
+[distillation.ipynb](distillation.ipynb) connects generation, student inference/cleaning, parent targets, QLoRA SFTTrainer, and Lighteval custom metrics. It prioritizes weak tasks from development scores and stops when all thresholds pass or after the configured maximum rounds (default 5). See [the loop guide](DISTILLATION_LOOP.md) and [loop configuration](config/distillation_loop.json). The notebook uses the existing loaded Qwen3-8B student and requires a CUDA GPU.

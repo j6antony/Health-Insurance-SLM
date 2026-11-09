@@ -235,6 +235,15 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(payload['request']['count'],2)
         self.assertEqual(sum(payload['request']['difficulty'].values()),2)
 
+    def test_held_out_exclusions_never_enter_generation_prompts(self):
+        held_out=scenario(i=999)
+        held_out['instruction']='UNIQUE_HELD_OUT_SECRET'
+        p=Pipeline(self.config,MockParent(),exclusions=[held_out])
+        plan=p.plan()
+        self.assertNotIn('UNIQUE_HELD_OUT_SECRET',json.dumps(plan['messages']))
+        self.assertFalse(any(r.get('instruction')=='UNIQUE_HELD_OUT_SECRET' for r in p.dedup.rows))
+        self.assertEqual(p.exclusion_dedup.check(held_out),'exact_duplicate')
+
     def test_full_mock_run_resume_export_and_no_leakage(self):
         mock=MockParent()
         p=Pipeline(self.config,mock);p.initialize_manifest()

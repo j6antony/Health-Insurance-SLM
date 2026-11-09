@@ -1,0 +1,26 @@
+{
+  "max_rounds": 5,
+  "scenarios_per_round": 72,
+  "development_examples_per_task": 3,
+  "development_fill_attempts": 3,
+  "thresholds": {
+    "macro_task_score": 0.9,
+    "minimum_task_score": 0.8,
+    "schema_evidence_valid_rate": 0.98
+  },
+  "feedback_strength": 4.0,
+  "output_dir": "outputs/distillation_loop",
+  "training": {
+    "max_sequence_length": 4096,
+    "epochs_per_round": 1,
+    "max_steps_per_round": 100,
+    "learning_rate": 0.0001,
+    "gradient_accumulation_steps": 8,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "replay_previous_rounds": true
+  },
+  "inference": {"max_new_tokens": 1024},
+  "random_seed": 42
+}
