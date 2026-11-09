@@ -261,7 +261,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual([m['role'] for m in row['messages']],['user','assistant'])
             user=json.loads(row['messages'][0]['content'])
             self.assertEqual(set(user),{'instruction','scenario','response_schema'})
-        config=copy.deepcopy(self.config);config['parent']['model']='gemini-other'
+        config=copy.deepcopy(self.config);config['parent']['model']='gpt-other'
         with self.assertRaises(ValueError):Pipeline(config,mock).initialize_manifest()
 
     def test_failures_bounded_and_rejected_not_counted(self):
@@ -326,7 +326,10 @@ class PipelineTests(unittest.TestCase):
 
 class BackendTests(unittest.TestCase):
     def settings(self):
-        return load_config()['parent']
+        settings = load_config()['parent']
+        settings.update(provider='gemini', model='gemini-3.5-flash', api_key_env='GEMINI_API_KEY')
+        settings.pop('reasoning_effort', None)
+        return settings
 
     def response(self,data):
         return io.BytesIO(json.dumps(data).encode())
@@ -370,7 +373,7 @@ class BackendTests(unittest.TestCase):
 
     def test_missing_env_and_invalid_config(self):
         with patch.dict(os.environ,{},clear=True),self.assertRaises(ParentError):GeminiParent(self.settings())
-        config=load_config();self.assertEqual(config['parent']['model'],'gemini-3.5-flash')
+        config=load_config();self.assertEqual(config['parent']['model'],'gpt-6-luna')
         with tempfile.TemporaryDirectory() as d:
             config['sampling']['mode']='random'
             path=Path(d)/'bad.json';path.write_text(json.dumps(config))

@@ -7,7 +7,7 @@ from .config import resolve_path
 from .coverage_tracker import coverage_state
 from .dataset_builder import export_dataset
 from .deduplicator import Deduplicator
-from .parent_backend import GeminiParent, ParentError
+from .parent_backend import create_parent, ParentError
 from .persistence import Store, atomic_json, digest, now, read_jsonl
 from .prompt_builder import (generation_messages, load_system_prompt, teacher_messages,
                              verification_messages, scenario_audit_messages)
@@ -109,7 +109,7 @@ class Pipeline:
         if self.parent is None:
             def logger(event):
                 self.store.append('api_usage.jsonl', {'timestamp': now(), **event})
-            self.parent = GeminiParent(self.config['parent'], logger=logger)
+            self.parent = create_parent(self.config['parent'], logger=logger)
         if not self.model_checked:
             result = self.parent.check_model()
             self.model_checked = True

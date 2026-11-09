@@ -18,7 +18,8 @@ def load_config(path=None):
     if any(not isinstance(config[key], dict) for key in config):
         raise ValueError('Configuration sections must be objects')
     s, g, p = config['sampling'], config['generation'], config['parent']
-    if set(p) != {'provider', 'model', 'api_key_env', 'max_output_tokens', 'temperature', 'timeout_seconds', 'max_retries'}:
+    required = {'provider', 'model', 'api_key_env', 'max_output_tokens', 'temperature', 'timeout_seconds', 'max_retries'}
+    if not required <= set(p) or set(p) - required - {'reasoning_effort'}:
         raise ValueError('Unknown parent setting; credentials must use api_key_env, never config values')
     if s['mode'] != 'balanced':
         raise ValueError('Only balanced sampling is supported')
@@ -39,10 +40,13 @@ def load_config(path=None):
     for weights in (g['difficulty_weights'], g['task_weights']):
         if not isinstance(weights, dict) or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in weights.values()):
             raise ValueError('Weights must be finite positive numbers')
-    if p['provider'] != 'gemini':
-        raise ValueError('This backend implements Gemini; no automatic provider substitution')
-    if not isinstance(p['model'], str) or not p['model'].startswith('gemini-') or '/' in p['model']:
-        raise ValueError('Specify an explicit Gemini API model identifier')
+    if p['provider'] not in ('openai', 'gemini'):
+        raise ValueError('Choose openai or gemini explicitly; no automatic provider substitution')
+    prefix = 'gpt-' if p['provider'] == 'openai' else 'gemini-'
+    if not isinstance(p['model'], str) or not p['model'].startswith(prefix) or '/' in p['model']:
+        raise ValueError('Specify an explicit API model identifier matching the provider')
+    if p.get('reasoning_effort', 'medium') not in ('none', 'low', 'medium', 'high', 'xhigh', 'max'):
+        raise ValueError('Unsupported reasoning_effort')
     if not isinstance(p['api_key_env'], str) or not p['api_key_env'].isidentifier():
         raise ValueError('api_key_env must name an environment variable')
     for key in ('max_output_tokens', 'timeout_seconds'):

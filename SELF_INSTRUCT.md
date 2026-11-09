@@ -1,14 +1,15 @@
 # Automated healthcare Self-Instruct
 
-The active pipeline uses **Gemini 3.5 Flash** as the temporary parent for scenario generation, reference answers, and separate automated audits. The downstream student is **Qwen3-8B**. No student weights, SFT training, DSPy, LightEval, or GOLD are loaded by this pipeline.
+The active pipeline uses **GPT-6 Luna** as the parent for scenario generation, reference answers, and separate automated audits. The downstream student is **Qwen3-8B**. No student weights, SFT training, DSPy, LightEval, or GOLD are loaded by this pipeline.
 
-The latest **Self Instruct Implementation Guide** specification was used for the implementation. The configured Gemini model was explicitly authorized as the temporary replacement for the planned GPT-6 Luna parent. Google's authenticated model endpoint confirmed `gemini-3.5-flash` is available. Switching to GPT-6 later requires a backend implementing the same `check_model()` and `generate_json()` interface and verification of the actual API model identifier; there is no silent provider fallback.
+The latest **Self Instruct Implementation Guide** specification was used for the implementation. OpenAI GPT-6 Luna is now configured through the Responses API. Gemini remains an explicitly selectable backend; there is no silent provider fallback. Model access is checked using the configured account before generation.
+
 
 ## Run
 
 Python 3.10+ on macOS/Linux; the active pipeline uses only the standard library. The imported upstream `requirements.txt` is legacy and is not needed for this runner.
 
-Set `GEMINI_API_KEY` in the environment using your usual secret manager or shell. Keys are not loaded from config or stored in repository files. The supplied key was used only in process memory during the live checks and has not been persisted for future shells.
+Set `OPENAI_API_KEY` in the environment using your usual secret manager or shell. Keys are not loaded from config or stored in repository files. No key value belongs in source code or configuration. On Kaggle, use Add-ons → Secrets and enable access to the secret named OPENAI_API_KEY.
 
 ```sh
 python3 run_self_instruct.py dry-run
@@ -45,7 +46,7 @@ Increase `--target` when resuming. Other configuration/source changes require a 
 - `validation.py`: exact scenario/answer contracts, quotas, reference IDs, source quotes, extraction page/value checks, code-candidate membership, and uncertainty flags. It uses the schema subset required by the current 18 schemas and fails on unsupported keywords instead of silently ignoring them.
 - `deduplicator.py`: exact fingerprints, configurable ROUGE-L and context overlap, and reasoning-contrast guards. A source-text model audit also compares semantic novelty with nearest same-task examples and candidates in the batch. `semantic_duplicate_threshold` controls additional lexical shortlisting for that audit, not a calibrated embedding distance. No embedding model is downloaded.
 - `coverage_tracker.py`: per-task weights/deficits, difficulty, case types, skills, and overlapping coverage dimensions over the last 40 accepted scenarios. Coverage dimensions come from the separate source-text audit rather than solely from generated `case_type` labels.
-- `parent_backend.py`: Gemini REST client, environment authentication, explicit model check, JSON schemas, finite transient retries, rate-limit backoff, complete-response checks, certificate validation, token usage/error-code logging. No raw HTTP error bodies, request headers, or credentials are logged.
+- `parent_backend.py`: OpenAI Responses and Gemini REST clients, environment authentication, explicit model check, JSON validation, finite transient retries, rate-limit backoff, complete-response checks, certificate validation, token usage/error-code logging. No raw HTTP error bodies, request headers, or credentials are logged.
 - `pipeline.py` and `persistence.py`: bounded generation, append-and-fsync persistence, global IDs, provenance, source/config hashes, file locking, restart reconstruction, and audit quarantines. Corrupt/truncated JSONL is reported rather than silently discarded.
 - `dataset_builder.py`: only schema/evidence/audit-passing answer pairs are exported. Source hashes are checked again. Metadata remains outside the messages sent to the student.
 
@@ -91,3 +92,7 @@ python3 data/self_instruct/validate_seeds.py
 The tests use mocked parents and require no paid API calls. The live smoke output is in `outputs/self_instruct_gemini_smoke`; it is a small integration check, not the full default 120-scenario dataset.
 
 Official API references used: [Google Gemini API](https://ai.google.dev/api), [model metadata](https://ai.google.dev/api/models?hl=en), and [generateContent](https://ai.google.dev/api/generate-content?hl=en).
+
+OpenAI uses JSON object mode with a private `result` transport wrapper so array responses and arbitrary scenario context remain compatible with the existing contracts. The original JSON schema is included in the instructions and enforced locally before returning the unwrapped result. This does not claim native strict-schema constrained decoding; malformed outputs are rejected and follow the bounded retry policy. Reasoning effort defaults to medium, with temperature omitted while reasoning is enabled.
+
+When switching providers, use a new output directory. Existing Gemini logs remain historical evidence only, not a live OpenAI verification. OpenAI request formatting, usage logging, refusal/truncation handling, authentication, and retry behavior are covered by mocked tests. Official references: [Responses API](https://developers.openai.com/api/docs/guides/text), [JSON outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses), and [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna).

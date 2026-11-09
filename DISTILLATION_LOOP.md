@@ -2,7 +2,7 @@
 
 Open `distillation.ipynb` and run its cells in order on a CUDA GPU. Attach the full repository so the notebook can import `self_instruct_pipeline` and `distillation_loop`. The notebook installs `requirements-training.txt`, obtains credentials from the environment/Kaggle Secrets, and loads Qwen3-8B once in 4-bit mode. The existing inline Hugging Face credential has been removed.
 
-The parent remains the configured Gemini 3.5 Flash client. Provide `GEMINI_API_KEY` in Kaggle Secrets or the environment. `HF_TOKEN` is optional for the public student checkpoint. No credential is embedded in this notebook or configuration.
+The parent is GPT-6 Luna through the OpenAI Responses API. Provide `OPENAI_API_KEY` in Kaggle Secrets or the environment. The public Qwen student loads anonymously with `token=False`; Hugging Face login is not required. No credential is embedded in this notebook or configuration.
 
 ## Sequence
 
@@ -67,7 +67,7 @@ Development prompts and answers never enter student training, generator demonstr
 
 ## Persistence and recovery
 
-Kaggle writes to `/kaggle/working/distillation_loop`; locally, defaults are under `outputs/distillation_loop`. The notebook overrides the output path so an attached read-only repository can still be used.
+Kaggle writes to `/kaggle/working/distillation_loop_openai`; locally, the notebook defaults to `outputs/distillation_loop_openai`. The notebook overrides the output path so an attached read-only repository can still be used.
 
 - `development.jsonl` and its manifest freeze the evaluated examples and answers.
 - `loop_state.json` records completed rounds, score history, stop reason, last completed adapter, and best adapter.
@@ -85,3 +85,11 @@ python3 -m unittest discover -s tests -v
 Tests cover cleaning, label masks, gates, coverage, adaptive weights, threshold/cap stopping, best-model restoration, and recovery after training/evaluation interruptions. Optional `test_native_training.py` checks the actual pinned Lighteval metrics and a one-step tiny CPU SFT model without API calls or model downloads when training dependencies are installed. These CPU checks do not establish Qwen3-8B CUDA/QLoRA compatibility or training improvements.
 
 Primary API references: [TRL SFTTrainer](https://huggingface.co/docs/trl/v0.25.1/en/sft_trainer), [Lighteval custom metrics](https://huggingface.co/docs/lighteval/main/en/adding-a-new-metric), and the inspected published Lighteval 0.11.0/TRL 0.25.1 wheels.
+
+## Switching from Gemini on Kaggle
+
+Upload the updated repository files, including `self_instruct_pipeline/parent_backend.py`, `pipeline.py`, `config.py`, `config/self_instruct.json`, and the notebook. In Kaggle **Add-ons → Secrets**, create a secret named exactly **OPENAI_API_KEY**, paste your OpenAI key as its value, and enable notebook access. Do not paste the key into a Python cell or config file.
+
+Run the updated credential cell, then model/settings cells. Use a fresh output directory such as `/kaggle/working/distillation_smoke_openai` for a smoke test, or keep the notebook's new OpenAI-specific default folder. Existing Gemini experiment folders cannot be resumed under a different parent configuration.
+
+The backend uses standard-library HTTP, so no OpenAI SDK installation is required. `reasoning_effort` defaults to `medium`. Temperature is omitted while reasoning is enabled, as required by GPT-6. The same backend handles scenarios, reference answers, and audits. Model availability is checked with your account at runtime; local mocked tests do not prove account access.

@@ -1,4 +1,4 @@
-"""Gemini REST client; keys remain in memory/environment and never enter URLs/logs."""
+"""OpenAI/Gemini clients. Credentials stay in memory/environment, never URLs or logs."""
 import json
 import os
 import ssl
@@ -14,8 +14,8 @@ class ParentError(RuntimeError):
         self.retryable = retryable
 
 
-class GeminiParent:
-    BASE = 'https://generativelanguage.googleapis.com/v1beta'
+class JSONParent:
+    NAME = "Parent"
 
     def __init__(self, settings, *, api_key=None, logger=None, opener=None, sleep=time.sleep):
         self.settings = settings
@@ -37,7 +37,7 @@ class GeminiParent:
 
     def _request(self, suffix, body=None, operation='request'):
         encoded = json.dumps(body).encode() if body is not None else None
-        headers = {'x-goog-api-key': self._key, 'Content-Type': 'application/json'}
+        headers = {**self.auth_headers(), 'Content-Type': 'application/json'}
         request = urllib.request.Request(self.BASE + suffix, data=encoded, headers=headers,
                                          method='POST' if body is not None else 'GET')
         for attempt in range(self.settings['max_retries'] + 1):
@@ -47,7 +47,7 @@ class GeminiParent:
                     result = json.load(response)
                 self.logger({'operation': operation, 'model': self.model, 'attempt': attempt + 1,
                              'status': 'ok', 'duration_seconds': round(time.monotonic() - started, 3),
-                             'usage': result.get('usageMetadata', {})})
+                             'usage': result.get('usageMetadata', result.get('usage', {}))})
                 return result
             except urllib.error.HTTPError as exc:
                 transient = exc.code == 429 or 500 <= exc.code < 600
@@ -57,18 +57,25 @@ class GeminiParent:
                 self.logger({'operation': operation, 'model': self.model, 'attempt': attempt + 1,
                              'status': 'http_error', 'http_status': exc.code})
                 if not transient or attempt == self.settings['max_retries']:
-                    raise ParentError(f'Gemini HTTP {exc.code} during {operation}', transient) from None
+                    raise ParentError(f'{self.NAME} HTTP {exc.code} during {operation}', transient) from None
                 delay = min(30, float(retry_after)) if retry_after.isdigit() else min(30, 2 ** attempt)
                 self._sleep(delay)
             except (urllib.error.URLError, TimeoutError, OSError):
                 self.logger({'operation': operation, 'model': self.model, 'attempt': attempt + 1,
                              'status': 'network_error'})
                 if attempt == self.settings['max_retries']:
-                    raise ParentError(f'Gemini network failure during {operation}', True) from None
+                    raise ParentError(f'{self.NAME} network failure during {operation}', True) from None
                 self._sleep(min(30, 2 ** attempt))
             except (json.JSONDecodeError, UnicodeDecodeError):
-                raise ParentError('Gemini returned malformed transport JSON', True) from None
-        raise ParentError('Gemini retries exhausted')
+                raise ParentError(f'{self.NAME} returned malformed transport JSON', True) from None
+        raise ParentError(f'{self.NAME} retries exhausted')
+
+class GeminiParent(JSONParent):
+    NAME = 'Gemini'
+    BASE = 'https://generativelanguage.googleapis.com/v1beta'
+
+    def auth_headers(self):
+        return {'x-goog-api-key': self._key}
 
     def check_model(self):
         result = self._request('/models/' + self.model, operation='model_check')
@@ -98,3 +105,70 @@ class GeminiParent:
             return json.loads(text)
         except (json.JSONDecodeError, TypeError):
             raise ParentError('Gemini returned invalid generated JSON', True) from None
+
+
+class OpenAIParent(JSONParent):
+    NAME = 'OpenAI'
+    BASE = 'https://api.openai.com/v1'
+
+    def auth_headers(self):
+        return {'Authorization': f'Bearer {self._key}'}
+
+    def check_model(self):
+        result = self._request('/models/' + self.model, operation='model_check')
+        if result.get('id') != self.model:
+            raise ParentError('OpenAI did not confirm the configured model')
+        return {'model': result['id'], 'provider': 'openai'}
+
+    def generate_json(self, messages, response_schema, operation='generation', temperature=None):
+        if len(messages) != 2 or [m['role'] for m in messages] != ['system', 'user']:
+            raise ValueError('Backend expects exactly system and user messages')
+        # JSON mode accepts an object at the root, while our pipeline also uses
+        # arrays and open-ended scenario.context dictionaries. Wrap the result
+        # in transport only, then enforce the ORIGINAL schema locally. This avoids
+        # silently dropping context keys to fit OpenAI's strict-schema subset.
+        instructions = messages[0]['content'] + (
+            '\nTransport requirement for this API call: return one JSON object with '
+            'exactly one key, "result". Its value is the JSON value requested above, '
+            'which must match this JSON Schema. The wrapper is transport only; '
+            'do not change the fields inside result.\n'
+            + json.dumps(response_schema)
+        )
+        effort = self.settings.get('reasoning_effort', 'medium')
+        body = {
+            'model': self.model,
+            'instructions': instructions,
+            'input': [{'role': 'user', 'content': messages[1]['content']}],
+            'text': {'format': {'type': 'json_object'}},
+            'reasoning': {'effort': effort},
+            'max_output_tokens': self.settings['max_output_tokens'],
+            'store': False,
+        }
+        # GPT-6 accepts temperature only with reasoning disabled.
+        if effort == 'none':
+            body['temperature'] = self.settings['temperature'] if temperature is None else temperature
+        result = self._request('/responses', body, operation)
+        if result.get('status') != 'completed' or result.get('error') or result.get('incomplete_details'):
+            raise ParentError('OpenAI response failed, incomplete, or truncated', True)
+        parts = [part for item in result.get('output', []) if item.get('type') == 'message'
+                 for part in item.get('content', [])]
+        if any(part.get('type') == 'refusal' for part in parts):
+            raise ParentError('OpenAI refused this request')
+        text = ''.join(part.get('text', '') for part in parts if part.get('type') == 'output_text')
+        try:
+            wrapped = json.loads(text)
+            if not isinstance(wrapped, dict) or set(wrapped) != {'result'}:
+                raise ValueError('Expected transport wrapper')
+            from .validation import validate_schema
+            validate_schema(wrapped['result'], response_schema)
+            return wrapped['result']
+        except (ValueError, TypeError, KeyError):
+            raise ParentError('OpenAI returned invalid or schema-incompatible JSON', True) from None
+
+
+def create_parent(settings, **kwargs):
+    if settings['provider'] == 'openai':
+        return OpenAIParent(settings, **kwargs)
+    if settings['provider'] == 'gemini':
+        return GeminiParent(settings, **kwargs)
+    raise ValueError('Unsupported parent provider')
