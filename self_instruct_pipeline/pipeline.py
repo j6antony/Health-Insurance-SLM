@@ -101,6 +101,24 @@ class Pipeline:
     def checkpoint(self):
         coverage = coverage_state(self.accepted, self.scheduler)
         coverage['rejected_records'] = len(self.store.read('rejected_records.jsonl'))
+        rejections = self.store.read('rejected_records.jsonl')
+        answers = self.store.read('validated_answers.jsonl')
+        attempted = {r['scenario_id'] for r in self.store.read('answer_attempts.jsonl')}
+        attempted.update(r.get('record', {}).get('scenario_id') for r in rejections
+                         if r.get('phase', '').startswith('answer') and isinstance(r.get('record'), dict))
+        attempted.update(r['scenario_id'] for r in answers)
+        attempted.discard(None)
+        repaired = sum(r.get('answer_attempt', 1) > 1 for r in answers)
+        attempted_repairs = {r['scenario_id'] for r in self.store.read('answer_attempts.jsonl')
+                             if r.get('attempt', 1) > 1}
+        atomic_json(self.store.path('failure_summary.json'), {
+            'accepted_scenarios': len(self.accepted), 'validated_answers': len(answers),
+            'answer_acceptance_rate': len(answers) / len(attempted) if attempted else None,
+            'repaired_answers': repaired,
+            'samples_with_repair_attempts': len(attempted_repairs),
+            'repair_success_rate': repaired / len(attempted_repairs) if attempted_repairs else None,
+            'failure_types': dict(Counter(r.get('failure_type', r['phase']) for r in rejections)),
+            'failure_reasons': dict(Counter(r['reason'] for r in rejections))})
         atomic_json(self.store.path('coverage_ledger.json'), coverage)
         atomic_json(self.store.path('scheduler_state.json'), {
             'rng_state': self.rng.getstate(), 'seed_exposure': dict(self.sampler.exposure), 'updated_at': now()})
@@ -131,13 +149,34 @@ class Pipeline:
                 'schemas': list(quotas), 'messages': messages}
 
     def reject(self, phase, reason, record=None, batch_id=None):
-        self.store.append('rejected_records.jsonl', {'id': str(uuid.uuid4()), 'timestamp': now(),
+        if phase.startswith('scenario'):
+            failure_type, repairable = ('duplicate' if 'duplicate' in reason.lower() else 'scenario_error'), False
+        elif phase.endswith('_api'):
+            failure_type, repairable = ('format_error' if 'JSON' in reason else 'api_error'), 'JSON' in reason
+        elif isinstance(record, dict) and record.get('audit') is not None:
+            failure_type, repairable = 'grounding_error', True
+        else:
+            failure_type = 'evidence_error' if any(word in reason.lower() for word in ('evidence', 'quote', 'unsupported')) else 'format_error'
+            repairable = True
+        self.store.append('rejected_records.jsonl', {'failure_type': failure_type, 'repairable': repairable, 'id': str(uuid.uuid4()), 'timestamp': now(),
                           'phase': phase, 'reason': reason, 'batch_id': batch_id, 'record': record})
 
     def generate(self, task_targets=None):
         target = self.config['generation']['target_accepted_scenarios']
+        goal = digest({'target': target, 'task_targets': task_targets})
+        limit_path = self.store.path('generation_limits.json')
+        limits = json.loads(limit_path.read_text()) if limit_path.exists() else {}
+        if goal not in limits:
+            needed = max(0, target - len(self.accepted))
+            batch = self.config['generation']['batch_size']
+            limits[goal] = {'max_batches': max(6, 3 * ((needed + batch - 1) // batch))}
+            atomic_json(limit_path, limits)
+        batches = sum(r.get('generation_goal') == goal for r in self.store.read('generation_batches.jsonl'))
         failures = 0
         while len(self.accepted) < target:
+            if batches >= limits[goal]['max_batches']:
+                raise ValueError('Scenario generation attempt limit reached; inspect failure_summary.json and rejected_records.jsonl')
+            batches += 1
             quotas = None
             if task_targets is not None:
                 counts = Counter(r['task'] for r in self.accepted)
@@ -151,34 +190,62 @@ class Pipeline:
                     raise ValueError('Development task targets disagree with generation target')
             plan = self.plan(task_quotas=quotas)
             batch_id = str(uuid.uuid4())
-            self.store.append('generation_batches.jsonl', {'batch_id': batch_id, 'timestamp': now(),
+            self.store.append('generation_batches.jsonl', {'batch_id': batch_id, 'generation_goal': goal, 'timestamp': now(),
                               'task_quotas': plan['task_quotas'], 'difficulty': plan['difficulty'], 'seed_ids': plan['seed_ids']})
             accepted_this_batch = []
             for attempt in range(self.config['generation']['max_retries_per_batch'] + 1):
                 records = None
                 try:
+                    print(f'Generating scenarios: accepted={len(self.accepted)}/{target}, batch={batches}/{limits[goal]["max_batches"]}, tasks={plan["task_quotas"]}', flush=True)
                     client = self.client()
                     count = sum(plan['task_quotas'].values())
                     records = client.generate_json(plan['messages'], batch_schema(plan['task_quotas'], count), 'scenario_generation')
-                    validate_batch(records, plan['task_quotas'], plan['difficulty'], self.schemas, self.references)
+                    # Batch shape/quotas must be coherent, but invalid individual
+                    # scenarios are quarantined without losing their valid peers.
+                    if not isinstance(records, list) or not records or len(records) > 2 * count:
+                        raise ValidationError('Generation batch envelope invalid')
+                    valid, ids = [], set()
+                    task_counts, difficulty_counts = Counter(), Counter()
+                    for row in records:
+                        try:
+                            validate_scenario(row, self.schemas, self.references)
+                            if row['generation_id'] in ids:
+                                raise ValidationError('Duplicate generation ID within batch')
+                            if task_counts[row['task']] >= plan['task_quotas'].get(row['task'], 0):
+                                raise ValidationError('Scenario exceeds requested task quota')
+                            if difficulty_counts[row['difficulty']] >= plan['difficulty'].get(row['difficulty'], 0):
+                                raise ValidationError('Scenario exceeds requested difficulty quota')
+                            ids.add(row['generation_id'])
+                            task_counts[row['task']] += 1
+                            difficulty_counts[row['difficulty']] += 1
+                            valid.append(row)
+                        except (ValidationError, KeyError, TypeError) as exc:
+                            self.reject('scenario_validation', str(exc), row, batch_id)
+                    records = valid
+                    if not records:
+                        break
                     neighbors = {r['generation_id']: self.dedup.neighbors(r) for r in records}
                     audits = client.generate_json(scenario_audit_messages(records, neighbors),
                                                    scenario_audit_schema([r['generation_id'] for r in records]),
                                                    'scenario_audit', temperature=0.0)
-                    validate_schema(audits, scenario_audit_schema([r['generation_id'] for r in records]))
-                    by_id = {a['generation_id']: a for a in audits}
-                    if len(by_id) != len(records):
-                        raise ValidationError('Missing/duplicate scenario audits')
-                    # Validate every audit reference before committing any item,
-                    # so a malformed late audit cannot cause a partially retried batch.
+                    if not isinstance(audits, list):
+                        raise ValidationError('Scenario audit must return an array')
+                    audit_ids = Counter(a.get('generation_id') for a in audits if isinstance(a, dict))
+                    by_id = {a.get('generation_id'): a for a in audits if isinstance(a, dict)}
+                    audit_schema = scenario_audit_schema([r['generation_id'] for r in records])['items']
                     for index, row in enumerate(records):
-                        duplicate = by_id[row['generation_id']]['duplicate_of']
-                        related_ids = {r['id'] for r in neighbors[row['generation_id']]}
-                        related_ids.update(r['generation_id'] for r in records[:index])
-                        if duplicate and duplicate not in related_ids:
-                            raise ValidationError('Novelty audit cites an unknown comparison ID')
-                    for row in records:
-                        audit = by_id[row['generation_id']]
+                        audit = by_id.get(row['generation_id'])
+                        try:
+                            if audit_ids[row['generation_id']] != 1:
+                                raise ValidationError('Missing/duplicate scenario audit')
+                            validate_schema(audit, audit_schema)
+                            related_ids = {r['id'] for r in neighbors[row['generation_id']]}
+                            related_ids.update(r['generation_id'] for r in records[:index])
+                            if audit['duplicate_of'] and audit['duplicate_of'] not in related_ids:
+                                raise ValidationError('Novelty audit cites an unknown comparison ID')
+                        except (ValidationError, KeyError, TypeError) as exc:
+                            self.reject('scenario_audit', str(exc), {'scenario': row, 'audit': audit}, batch_id)
+                            continue
                         reason = self.dedup.check(row)
                         if self.exclusion_dedup.check(row):
                             reason = 'held_out_overlap'
@@ -215,7 +282,9 @@ class Pipeline:
                 raise ValueError('Stopped after consecutive failed batches; inspect rejected_records.jsonl')
         return len(self.accepted)
 
-    def answer(self, allow_partial=False, scenario_ids=None):
+    def answer(self, allow_partial=False, scenario_ids=None, max_sample_attempts=3):
+        if type(max_sample_attempts) is not int or max_sample_attempts < 1:
+            raise ValueError('max_sample_attempts must be a positive integer')
         existing = self.store.unique_records('validated_answers.jsonl', 'scenario_id')
         by_id = {r['id']: r for r in self.accepted}
         for answer in existing:
@@ -223,9 +292,13 @@ class Pipeline:
                 raise ValueError('Existing answer does not match its unchanged scenario')
         done = {r['scenario_id'] for r in existing}
         feedback_by_id = {}
+        previous_failures = Counter()
+        attempt_counts = Counter(r['scenario_id'] for r in self.store.read('answer_attempts.jsonl'))
         for rejected in self.store.read('rejected_records.jsonl'):
             proposal = rejected.get('record', {})
-            if rejected.get('phase') == 'answer_validation' and isinstance(proposal, dict):
+            if rejected.get('phase') in ('answer_validation', 'answer_api') and isinstance(proposal, dict):
+                previous_failures[proposal.get('scenario_id')] += 1
+            if (rejected.get('phase') == 'answer_validation' or (rejected.get('phase') == 'answer_api' and 'JSON' in rejected['reason'])) and isinstance(proposal, dict):
                 feedback_by_id[proposal.get('scenario_id')] = {
                     'validation_error': rejected['reason'], 'proposed_answer': proposal.get('answer'),
                     'audit': proposal.get('audit')}
@@ -234,17 +307,28 @@ class Pipeline:
             if row['id'] in done or (scenario_ids is not None and row['id'] not in scenario_ids):
                 continue
             success = False
-            for attempt in range(self.config['generation']['max_answer_attempts_per_run']):
+            used = max(attempt_counts[row['id']], previous_failures[row['id']])
+            attempts = max(0, max_sample_attempts - used) if allow_partial else self.config['generation']['max_answer_attempts_per_run']
+            for attempt in range(attempts):
                 answer, audit = None, None
                 try:
                     client = self.client()
+                    number = used + attempt + 1
+                    self.store.append('answer_attempts.jsonl', {'scenario_id': row['id'],
+                        'attempt': number, 'timestamp': now()})
+                    # Seed historical failures into the persistent count on first resume.
+                    if attempt_counts[row['id']] < used:
+                        for _ in range(used - attempt_counts[row['id']]):
+                            self.store.append('answer_attempts.jsonl', {'scenario_id': row['id'], 'historical': True})
+                        attempt_counts[row['id']] = used
+                    print(f'Answering {row["task"]}: attempt {number}/{max_sample_attempts if allow_partial else number + attempts - attempt - 1}', flush=True)
                     messages = teacher_messages(row, self.schemas, feedback_by_id.get(row['id']))
                     answer = client.generate_json(messages, self.schemas[row['task']], 'teacher_answer', temperature=0.0)
                     validate_answer(row, answer, self.schemas[row['task']])
                     audit = client.generate_json(verification_messages(row, answer, self.schemas), AUDIT_SCHEMA, 'answer_audit', temperature=0.0)
                     validate_audit(audit)
                     record = {'scenario_id': row['id'], 'scenario_hash': digest(row), 'task': row['task'],
-                              'answer': answer, 'audit': audit, 'created_at': now(), 'parent': row['parent'],
+                              'answer': answer, 'audit': audit, 'answer_attempt': number, 'created_at': now(), 'parent': row['parent'],
                               'teacher_prompt_hash': digest(messages),
                               'audit_prompt_hash': digest(verification_messages(row, answer, self.schemas)),
                               'settings': {**self.config['parent'], 'temperature': 0.0},
@@ -255,7 +339,9 @@ class Pipeline:
                     break
                 except ParentError as exc:
                     self.reject('answer_api', str(exc), {'scenario_id': row['id']})
-                    if not exc.retryable:
+                    if 'JSON' in str(exc):
+                        feedback_by_id[row['id']] = {'validation_error': str(exc), 'proposed_answer': None, 'audit': None}
+                    if not exc.retryable or (allow_partial and 'JSON' not in str(exc)):
                         raise
                 except (ValidationError, KeyError, TypeError) as exc:
                     self.reject('answer_validation', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
@@ -265,6 +351,7 @@ class Pipeline:
             failures = 0 if success else failures + 1
             if not allow_partial and failures >= self.config['generation']['max_consecutive_failed_batches']:
                 raise ValueError('Stopped after consecutive failed answers; inspect rejected_records.jsonl')
+        self.checkpoint()
         if not allow_partial and len(done) != len(self.accepted):
             raise ValueError('Some answers failed automatic checks; resume retries unanswered scenarios')
         return len(done)

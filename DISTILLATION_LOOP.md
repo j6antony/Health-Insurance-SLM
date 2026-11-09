@@ -196,7 +196,7 @@ and retains earlier successful examples. `development_fill_attempts` now caps th
 number of replacement passes AFTER the initial pass (one replacement pass for the
 smoke test, three with default full settings). These passes are recorded in
 `development_replacements.json` before calls and persist across resumes; an
-interrupted pass consumes its allowance conservatively. The shared API budget
+interrupted pass resumes its saved targets instead of consuming another pass. The shared API budget
 still covers every call. If coverage remains incomplete after this limit, the
 loop stops with an error rather than evaluating a smaller task set. Once frozen,
 `development.jsonl` is reused unchanged after every training round.
@@ -204,3 +204,54 @@ loop stops with an error rather than evaluating a smaller task set. Once frozen,
 These changes can resume an existing run with the same configuration and output
 folder. Copy the updated `distillation_loop` and `self_instruct_pipeline` folders
 to Kaggle and restart the kernel. Keep the run's output and budget files intact.
+
+
+## Failed-sample handling (Handle Failed Samples chat)
+
+The training loop now uses **filter → repair with feedback → reverify → replace**.
+Good scenarios and answers are saved independently. An invalid scenario or scenario
+audit no longer discards its valid batch peers. Batch-envelope errors still reject
+the request when samples cannot be identified safely. Multi-page documents use
+unique `(document_id, page_number)` pairs; the same document ID may occur on several
+pages. Evidence must still match that document and, for extraction, the stated page.
+
+For partial answer passes used by the training loop, each sample gets at most
+**three attempts total: one initial answer plus two repairs**. Every repair must
+pass local checks AND a fresh grounding audit. The most recent failed proposal
+and validation/audit feedback are supplied to the next attempt. Formatting failures
+are regenerated as JSON; evidence and grounding failures are corrected against
+sources, never automatically edited or accepted. This total replaces the legacy
+`max_answer_attempts_per_run` behavior in partial passes, including smoke mode.
+Standalone strict answer runs retain their previous per-run setting.
+
+`answer_attempts.jsonl` reserves attempts before requests; historical rejection
+records also count. Restarting a kernel does not reset sample attempts. A crashed
+request conservatively consumes one attempt. Network/HTTP errors and API-budget
+exhaustion stop the run instead of silently consuming repair cycles. Invalid
+model-generated JSON may use the remaining repair allowance.
+
+Development setup first repairs existing candidates for missing tasks, even if
+replacement passes were previously exhausted. It then generates replacements only
+for remaining missing task counts when replacement allowance remains. An active
+replacement pass saves its task targets and resumes after interruption. Frozen
+complete development data is unchanged. Training retains the earlier behavior of
+using validated subsets, subject to the minimum acceptance requirement.
+
+`failure_summary.json` reports validated answer counts, sample acceptance rate,
+failure types/reasons, repaired answers, and repair success rate. Rejection rows
+include `failure_type` and `repairable`; old rows retain their phase labels. Counts
+measure automated synthetic verification, not independent factual accuracy.
+
+Scenario generation also has a persistent per-goal batch ceiling: at least six
+batches, or three times the ideal batch count for larger requests. Each batch's
+existing request retry limit and consecutive-failure limit still apply. Progress
+prints before generation and answer calls, showing tasks and attempt counts.
+`generation_limits.json` and `generation_batches.jsonl` preserve this ceiling across
+resumes. The API call/cost budget is unchanged; increasing training `max_rounds`
+does not increase development-data repair or replacement allowances.
+
+To update Kaggle, copy both `distillation_loop` and `self_instruct_pipeline` folders,
+restart the kernel, and retain the same configs, output directory, and budget files.
+Previously failed development candidates may now be repaired within their remaining
+three-attempt allowance without resetting the replacement counter. If both sample
+and replacement limits are exhausted, setup still stops and lists missing tasks.

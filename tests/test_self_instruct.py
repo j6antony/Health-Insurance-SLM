@@ -302,7 +302,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(p.accepted),0)
         self.assertTrue(all(r['reason'].startswith('semantic_duplicate:') for r in p.store.read('rejected_records.jsonl')))
 
-    def test_bad_late_audit_cannot_partially_commit_batch(self):
+    def test_bad_late_audit_is_quarantined_without_losing_valid_peer(self):
         class BadAuditParent(MockParent):
             def generate_json(self,messages,schema,operation='generation',temperature=None):
                 value=super().generate_json(messages,schema,operation,temperature)
@@ -310,7 +310,8 @@ class PipelineTests(unittest.TestCase):
                 return value
         p=Pipeline(self.config,BadAuditParent());p.initialize_manifest()
         with self.assertRaises(ValueError):p.generate()
-        self.assertEqual(len(p.accepted),0)
+        self.assertEqual(len(p.accepted),1)
+        self.assertEqual(p.store.read('rejected_records.jsonl')[0]['phase'], 'scenario_audit')
 
     def test_failed_answer_feedback_survives_resume_and_skips_done(self):
         class FailingParent(MockParent):

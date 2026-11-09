@@ -46,25 +46,39 @@ def frozen_development(base_config, loop_config, output_dir, parent=None):
         pipeline.initialize_manifest()
         progress_path = output_dir/'development_replacements.json'
         progress = json.loads(progress_path.read_text()) if progress_path.exists() else {'passes': 0}
+        # Repair only existing candidates for uncovered tasks, before spending
+        # credits generating replacements. Per-sample limits survive reruns.
+        pairs = checked_pairs(pipeline)
+        counts = Counter(r['task'] for r, a in pairs)
+        repair_ids = {r['id'] for r in pipeline.accepted if counts[r['task']] < per_task}
+        if repair_ids:
+            pipeline.answer(allow_partial=True, scenario_ids=repair_ids)
         # One initial pass plus a bounded number of targeted replacement passes.
-        for attempt in range(progress['passes'], loop_config['development_fill_attempts'] + 1):
+        start = progress['passes'] - int(bool(progress.get('active')))
+        for attempt in range(start, loop_config['development_fill_attempts'] + 1):
             pairs = checked_pairs(pipeline)
             counts = Counter(r['task'] for r, a in pairs)
             if all(counts[t] >= per_task for t in schemas):
                 break
-            before = {r['id'] for r in pipeline.accepted}
-            accepted_counts = Counter(r['task'] for r in pipeline.accepted)
-            if attempt == 0:
-                targets = {t: max(per_task, accepted_counts[t]) for t in schemas}
+            if progress.get('active'):
+                before = set(progress['active']['before'])
+                targets = progress['active']['targets']
             else:
-                targets = {t: accepted_counts[t] + max(0, per_task - counts[t]) for t in schemas}
-            # Reserve the pass before API calls; restarting cannot reset the limit.
-            progress['passes'] = attempt + 1
-            atomic_json(progress_path, progress)
+                before = {r['id'] for r in pipeline.accepted}
+                accepted_counts = Counter(r['task'] for r in pipeline.accepted)
+                if attempt == 0:
+                    targets = {t: max(per_task, accepted_counts[t]) for t in schemas}
+                else:
+                    targets = {t: accepted_counts[t] + max(0, per_task - counts[t]) for t in schemas}
+                progress['passes'] = attempt + 1
+                progress['active'] = {'before': sorted(before), 'targets': targets}
+                atomic_json(progress_path, progress)
             pipeline.config['generation']['target_accepted_scenarios'] = sum(targets.values())
             pipeline.generate(task_targets=targets)
             ids = None if attempt == 0 else {r['id'] for r in pipeline.accepted} - before
             pipeline.answer(allow_partial=True, scenario_ids=ids)
+            progress.pop('active', None)
+            atomic_json(progress_path, progress)
         pairs = checked_pairs(pipeline)
         counts = Counter(r['task'] for r, a in pairs)
         if all(counts[t]>=per_task for t in schemas):
@@ -78,7 +92,8 @@ def frozen_development(base_config, loop_config, output_dir, parent=None):
                                   'reference_status':'frozen synthetic development set; not an independent test benchmark'})
             pipeline.checkpoint()
             return selected
-    raise ValueError('Unable to fill every development task within the configured attempt limit')
+    missing = {t: max(0, per_task - counts[t]) for t in schemas if counts[t] < per_task}
+    raise ValueError(f'Unable to fill every development task within the configured attempt limit; missing={missing}. Inspect development_generation/failure_summary.json')
 
 
 class CurriculumData:

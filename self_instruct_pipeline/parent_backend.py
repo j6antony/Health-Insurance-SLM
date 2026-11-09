@@ -197,7 +197,12 @@ class OpenAIParent(JSONParent):
             if not isinstance(wrapped, dict) or set(wrapped) != {'result'}:
                 raise ValueError('Expected transport wrapper')
             from .validation import validate_schema
-            validate_schema(wrapped['result'], response_schema)
+            if operation in ('scenario_generation', 'scenario_audit') and isinstance(wrapped['result'], list):
+                # Individual scenario/audit validation belongs in Pipeline.generate so
+                # one invalid member does not discard the entire generated batch.
+                pass
+            else:
+                validate_schema(wrapped['result'], response_schema)
             return wrapped['result']
         except (ValueError, TypeError, KeyError):
             raise ParentError('OpenAI returned invalid or schema-incompatible JSON', True) from None

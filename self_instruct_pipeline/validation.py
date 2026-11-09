@@ -97,9 +97,9 @@ def validate_scenario(record, tasks, references):
     if record['response_schema_key'] != record['task']:
         fail('response_schema_key must equal task')
     documents = record['scenario']['documents']
-    ids = [d['document_id'] for d in documents]
+    ids = [(d['document_id'], d['page_number']) for d in documents]
     if len(ids) != len(set(ids)) or any(not d['text'].strip() for d in documents):
-        fail('Duplicate document IDs or empty source text')
+        fail('Duplicate document/page pairs or empty source text')
     check_hidden_fields(record['scenario']['context'])
     lookup = {r['id']: r for r in references}
     reference_ids = record['reference_ids']
@@ -134,16 +134,19 @@ def validate_batch(records, quotas, difficulty, tasks, references):
 
 def validate_answer(record, answer, schema):
     validate_schema(answer, schema)
-    docs = {d['document_id']: d for d in record['scenario']['documents']}
+    pages = record['scenario']['documents']
+    docs = {}
+    for page in pages:
+        docs.setdefault(page['document_id'], []).append(page)
     for evidence in answer.get('evidence', []):
         if isinstance(evidence, str):
-            if not evidence.strip() or not any(evidence in d['text'] for d in docs.values()):
+            if not evidence.strip() or not any(evidence in d['text'] for d in pages):
                 fail('Classification evidence quote not in source')
         else:
             doc_id = evidence['document_id']
             if doc_id not in docs:
                 fail(f'Evidence document ID {doc_id!r} not found; use one of {sorted(docs)}')
-            if not evidence['quote'].strip() or evidence['quote'] not in docs[doc_id]['text']:
+            if not evidence['quote'].strip() or not any(evidence['quote'] in d['text'] for d in docs[doc_id]):
                 fail(f'Evidence quote for {doc_id!r} must be a nonempty exact contiguous substring of its source text')
     fields = answer.get('fields', [])
     names = [f['field_name'] for f in fields]
@@ -151,7 +154,7 @@ def validate_answer(record, answer, schema):
         fail('Duplicate extracted fields: emit at most one entry per field_name; mark a directly supported source value requires_review=true when conflicting')
     target_id = record['scenario']['context'].get('target_document_id')
     for field in fields:
-        matches = [d for d in docs.values() if field['evidence'] in d['text'] and d['page_number'] == field['page_number']]
+        matches = [d for d in pages if field['evidence'] in d['text'] and d['page_number'] == field['page_number']]
         if target_id:
             matches = [d for d in matches if d['document_id'] == target_id]
         if not field['evidence'].strip() or not matches:
@@ -163,7 +166,7 @@ def validate_answer(record, answer, schema):
             fail('Extracted value unsupported by its exact quote')
     if answer.get('missing_information') and answer.get('requires_review') is not True:
         fail('Missing information requires review flag')
-    all_source = '\n'.join(d['text'] for d in docs.values())
+    all_source = '\n'.join(d['text'] for d in pages)
     if 'suggested_codes' in answer:
         for code in answer['suggested_codes']:
             if not re.search(r'(?<!\w)' + re.escape(code) + r'(?!\w)', all_source):

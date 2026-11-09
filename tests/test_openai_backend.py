@@ -66,6 +66,17 @@ class OpenAIBackendTests(unittest.TestCase):
         client=OpenAIParent(load_config()['parent'],api_key='TEST',opener=lambda request,timeout:response(completed(value)))
         self.assertEqual(client.generate_json(MESSAGES,{'type':'array','items':{'type':'object'}}),value)
 
+    def test_scenario_members_reach_pipeline_for_individual_validation(self):
+        value = [{'valid': True}, {'malformed': True}]
+        schema = {'type': 'array', 'items': {'type': 'object', 'required': ['valid']}}
+        for operation in ('scenario_generation', 'scenario_audit'):
+            client = OpenAIParent(load_config()['parent'], api_key='TEST',
+                                  opener=lambda *a, **k: response(completed(value)))
+            self.assertEqual(client.generate_json(MESSAGES, schema, operation), value)
+        client = OpenAIParent(load_config()['parent'], api_key='TEST',
+                              opener=lambda *a, **k: response(completed(value)))
+        with self.assertRaises(ParentError): client.generate_json(MESSAGES, schema, 'teacher_answer')
+
     def test_model_access_checked(self):
         def open_request(request,timeout):
             self.assertEqual(request.full_url,'https://api.openai.com/v1/models/gpt-6-luna')
