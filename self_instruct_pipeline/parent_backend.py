@@ -68,6 +68,9 @@ class JSONParent:
                 try:
                     error = json.loads(exc.read(65536)).get('error', {})
                     if isinstance(error, dict):
+                        message = str(error.get('message', '')).lower()
+                        if 'json' in message and 'input' in message and 'contain' in message:
+                            details['error_hint'] = 'json_mode_requires_json_in_input'
                         for key in ('type', 'code', 'param'):
                             value = error.get(key)
                             if (isinstance(value, str) and self._key not in value
@@ -167,7 +170,11 @@ class OpenAIParent(JSONParent):
         body = {
             'model': self.model,
             'instructions': instructions,
-            'input': [{'role': 'user', 'content': messages[1]['content']}],
+            # Responses JSON mode validates input messages independently of
+            # top-level instructions. Ensure JSON intent for EVERY task/operation.
+            'input': [{'role': 'user', 'content':
+                       'Return one JSON object with the result key as instructed.\n\n'
+                       + messages[1]['content']}],
             'text': {'format': {'type': 'json_object'}},
             'reasoning': {'effort': effort},
             'max_output_tokens': self.settings['max_output_tokens'],

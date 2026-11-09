@@ -48,6 +48,19 @@ class OpenAIBackendTests(unittest.TestCase):
         self.assertEqual(logs[0]['usage']['total_tokens'],30)
         self.assertNotIn('TEST_SECRET',json.dumps(logs))
 
+    def test_json_mode_input_intent_when_task_does_not_mention_json(self):
+        messages = [{'role': 'system', 'content': 'Produce JSON.'},
+                    {'role': 'user', 'content': 'Explain this supplied policy.'}]
+        def opener(request, timeout):
+            body = json.loads(request.data)
+            text = body['input'][0]['content']
+            self.assertIn('json', text.lower())
+            self.assertTrue(text.endswith(messages[1]['content']))
+            self.assertEqual(messages[1]['content'], 'Explain this supplied policy.')
+            return response(completed({}))
+        client = OpenAIParent(load_config()['parent'], api_key='TEST', opener=opener)
+        self.assertEqual(client.generate_json(messages, {'type':'object'}), {})
+
     def test_array_and_free_context_preserved(self):
         value=[{'scenario':{'context':{'claim_id':'C-1','requested_fields':['policy_number']}}}]
         client=OpenAIParent(load_config()['parent'],api_key='TEST',opener=lambda request,timeout:response(completed(value)))
