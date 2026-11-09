@@ -93,3 +93,89 @@ Upload the updated repository files, including `self_instruct_pipeline/parent_ba
 Run the updated credential cell, then model/settings cells. Use a fresh output directory such as `/kaggle/working/distillation_smoke_openai` for a smoke test, or keep the notebook's new OpenAI-specific default folder. Existing Gemini experiment folders cannot be resumed under a different parent configuration.
 
 The backend uses standard-library HTTP, so no OpenAI SDK installation is required. `reasoning_effort` defaults to `medium`. Temperature is omitted while reasoning is enabled, as required by GPT-6. The same backend handles scenarios, reference answers, and audits. Model availability is checked with your account at runtime; local mocked tests do not prove account access.
+
+## API usage and cost tracking
+
+Every API attempt automatically appends to `api_usage.jsonl` and an Excel-readable
+`api_usage.csv` inside `development_generation/` or `self_instruct/`. Rows include
+UTC start/end timestamps, operation (generation, teacher, audit, or model check),
+model/provider, attempt number, HTTP/response status, duration, response ID,
+input/cached/output/reasoning/total tokens, estimated USD cost, and the pricing
+rates/source/date. Credentials and prompt/response contents are not included.
+Transport success can still have `response_status=incomplete`; reported tokens
+are charged in the estimate even when the pipeline rejects the generated answer.
+Retries have separate rows. Missing usage means unknown cost, never a zero-cost
+assumption. Successful model-access checks are marked non-generation with $0 cost.
+
+The loop exports a combined `RUN_DIR/api_usage.csv` and prints a cost summary on
+completion or a Python exception. Per-call files remain available if Kaggle is
+terminated abruptly. The last notebook cell refreshes the combined CSV manually:
+
+```python
+from self_instruct_pipeline.usage import export_usage
+print(export_usage(RUN_DIR))
+```
+
+For the default notebook, download
+`/kaggle/working/distillation_loop_openai/api_usage.csv` from Kaggle output files
+and open it in Excel. A custom smoke run saves it in your chosen `RUN_DIR`.
+Keep the JSONL journals with the run when resuming; CSVs are rebuilt from these
+journals without duplicating calls. Existing historical rows without timestamps
+or provider information cannot recover those missing details.
+
+The estimate uses GPT-6 Luna Standard global text rates verified November 9,
+2026: $0.10 input, $0.01 cached input, $0.50 output, and $0.125 cache writes per
+million tokens. Reasoning tokens are included in output tokens and are not added
+a second time. The documented long-context multipliers apply above 272,000 input
+tokens. Prices are in `self_instruct_pipeline/usage.py`; update them if pricing or
+models change. Unknown models/providers retain token counts but leave cost blank.
+This is an estimate for this code's calls, not an account billing statement;
+regional/tier premiums, other applications, and unreported usage after network
+failures require checking your provider dashboard.
+
+Pricing source: https://developers.openai.com/api/docs/models/gpt-6-luna
+
+## Run the integration test first
+
+The notebook now starts with `TEST_RUN = True` in its settings cell. Upload the
+updated complete repository to Kaggle, enable a CUDA GPU and Internet, enable
+access to the `OPENAI_API_KEY` secret, and run notebook cells in order. The preview
+cell also runs a local student-generation check before any paid API request.
+
+The smoke settings use a separate `/kaggle/working/distillation_smoke_openai`
+folder: 1 round, 8 new training scenarios, 18 frozen development examples (one per
+task), and at most 2 optimizer steps. All 18 evaluation tasks are retained; this
+checks the same code path as a full run. Generation and answer retries are reduced.
+The small development set checks integration, not reliable model quality.
+
+The run cell activates one shared API budget for the entire test: 120 HTTP
+attempts (including checks and retries) and $0.50 estimated USD. Before each
+request it persists a conservative allowance for UTF-8 input size plus framing
+and the maximum output-token budget, using Standard global text rates without a
+cache discount. Reported usage replaces that allowance after the call; unknown
+usage or an interrupted request retains it. The next call is refused if its
+allowance would exceed the limit. `BudgetExceeded` stops immediately and is not
+caught as a retryable provider error. Calls explicitly request Standard processing.
+This is a local estimate, not a provider-enforced account spending limit.
+
+`api_budget/state.json` preserves counts and accounted cost across kernel restarts
+and reruns. Do not delete it to resume, and do not run multiple notebooks against
+the same output folder. An old run without budget state is refused: choose a fresh
+folder rather than ignoring its historical usage. Limits are fixed once requests
+start. Full-run defaults have a separate $5 / 2,000-attempt allowance.
+
+After the smoke run, inspect:
+
+- `api_usage.csv`: calls, reported tokens, estimated costs, and unknown-cost rows.
+- `loop_state.json`: normally `completed_rounds: 1` and `max_rounds_reached` or
+  `thresholds_met`. If the initial model already passes the thresholds, training
+  is skipped as usual; that outcome alone does not verify SFT.
+- `round_01/`: training metrics,
+  saved adapter, student outputs, and Lighteval scores.
+
+If the budget or validation stops the test, inspect the reason before increasing
+limits; repeated failures should be fixed first. No automatic budget increases
+occur. A smoke run cannot establish full-run GPU memory requirements or guarantee
+high scores. Before a full experiment, **restart the kernel**, set `TEST_RUN = False`,
+and rerun from the top so the full experiment starts from the base student rather
+than the smoke-trained adapter. The full run uses its separate output folder.

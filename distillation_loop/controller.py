@@ -37,6 +37,17 @@ def save_predictions(runtime, records, schemas, directory):
 
 
 def run_loop(runtime, parent_config, config):
+    # Per-call journals are already saved, even if training/evaluation fails.
+    try:
+        return _run_loop(runtime, parent_config, config)
+    finally:
+        from self_instruct_pipeline.usage import export_usage
+        directory = resolve_path(config['output_dir'])
+        if directory.exists():
+            print('API usage:', export_usage(directory), flush=True)
+
+
+def _run_loop(runtime, parent_config, config):
     store = Store(resolve_path(config['output_dir']))
     schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
     settings_hash = digest({'config': config, 'parent': parent_config,

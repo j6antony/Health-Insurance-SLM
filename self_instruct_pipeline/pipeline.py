@@ -107,8 +107,8 @@ class Pipeline:
 
     def client(self):
         if self.parent is None:
-            def logger(event):
-                self.store.append('api_usage.jsonl', {'timestamp': now(), **event})
+            from .usage import UsageLogger
+            logger = UsageLogger(self.store.directory)
             self.parent = create_parent(self.config['parent'], logger=logger)
         if not self.model_checked:
             result = self.parent.check_model()
