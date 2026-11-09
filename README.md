@@ -11,3 +11,7 @@ The purpose of this is to fine-tune qwen3-8B using LLM(gpt6-luna) using a distil
   
 ## Implementation overview
 ![Architecture Diagram](assets/MedGemma%20Training%20Implementation%20Loop.png)
+
+## Self-Instruct seeds
+
+[Seed pack and usage guide](data/self_instruct/README.md): 72 synthetic seed tasks across 18 claims-related subtasks, with reference outputs, task schemas, a scenario-generation prompt, and a validation script. These are AI-authored examples awaiting domain review.

@@ -1,0 +1,807 @@
+{
+  "schema_version": "us_healthcare_tasks_v1",
+  "tasks": {
+    "icd_code_explanation": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "hcpcs_code_explanation": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "clinical_coding": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        },
+        "suggested_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review",
+        "suggested_codes"
+      ],
+      "additionalProperties": false
+    },
+    "denial_explanation": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "appeals_process_qa": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "policy_coverage_qa": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "eligibility_benefits_qa": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "patient_billing": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "compliance_qa": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "support_chat": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "claim_scrubbing": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review",
+        "issues"
+      ],
+      "additionalProperties": false
+    },
+    "document_classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_type",
+        "evidence",
+        "requires_review"
+      ],
+      "properties": {
+        "document_type": {
+          "type": "string",
+          "enum": [
+            "hospital_bill",
+            "discharge_summary",
+            "prescription",
+            "investigation_report",
+            "claim_form",
+            "other",
+            "unknown"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 99
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      }
+    },
+    "field_extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ],
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_name",
+              "value",
+              "evidence",
+              "page_number",
+              "requires_review"
+            ],
+            "properties": {
+              "field_name": {
+                "type": "string",
+                "enum": [
+                  "patient_name",
+                  "policy_number",
+                  "hospital_name",
+                  "admission_date",
+                  "discharge_date",
+                  "diagnosis",
+                  "total_amount",
+                  "currency"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 99
+              },
+              "page_number": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "requires_review": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "policy_summarization": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "claim_history_summarization": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "support_call_summarization": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review"
+      ],
+      "additionalProperties": false
+    },
+    "appeal_drafting": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        },
+        "draft": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review",
+        "draft"
+      ],
+      "additionalProperties": false
+    },
+    "medical_necessity_support": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "document_id": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "missing_information": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requires_review": {
+          "type": "boolean"
+        },
+        "criteria_assessment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "answer",
+        "evidence",
+        "missing_information",
+        "requires_review",
+        "criteria_assessment"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

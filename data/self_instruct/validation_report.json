@@ -1,0 +1,69 @@
+{
+  "status": "passed",
+  "seed_count": 72,
+  "task_count": 18,
+  "counts_by_task": {
+    "icd_code_explanation": 3,
+    "hcpcs_code_explanation": 3,
+    "clinical_coding": 3,
+    "denial_explanation": 3,
+    "appeals_process_qa": 3,
+    "policy_coverage_qa": 3,
+    "eligibility_benefits_qa": 3,
+    "patient_billing": 3,
+    "compliance_qa": 3,
+    "support_chat": 3,
+    "claim_scrubbing": 12,
+    "document_classification": 8,
+    "field_extraction": 7,
+    "policy_summarization": 3,
+    "claim_history_summarization": 3,
+    "support_call_summarization": 3,
+    "appeal_drafting": 3,
+    "medical_necessity_support": 3
+  },
+  "counts_by_case_type": {
+    "supported": 32,
+    "date_mismatch": 2,
+    "insufficient_evidence": 12,
+    "ambiguous": 3,
+    "contradiction": 7,
+    "wrong_scope": 1,
+    "no_issue": 5,
+    "out_of_scope": 1,
+    "capability_boundary": 1,
+    "unreadable": 3,
+    "unknown_trigger": 1,
+    "prompt_injection": 1,
+    "distractor": 1,
+    "pending_action": 1,
+    "unsupported_request": 1
+  },
+  "counts_by_difficulty": {
+    "easy": 16,
+    "hard": 14,
+    "medium": 42
+  },
+  "checks": [
+    "JSON parsing",
+    "unique IDs/names/instructions/inputs",
+    "18-task coverage",
+    "explicit supported task label on every record in both exports",
+    "supported response-schema constraints",
+    "core/annotated parity",
+    "exact source quotes and document references",
+    "extraction page attribution"
+  ],
+  "not_verified": [
+    "independent domain correctness",
+    "clinical/legal validity",
+    "semantic novelty",
+    "legacy repository runtime compatibility",
+    "model quality or performance"
+  ],
+  "sha256": {
+    "seed_tasks.jsonl": "880c2abf748d4fdb4f50b71868ead6614eeaa4cd80c3cea6ca1efa7cdc5b613a",
+    "seed_tasks.annotated.jsonl": "972ecf36163e5305c0fcd938554b4966f36e577c49949369b15e768878cbfc7c",
+    "task_schemas.json": "bbda704539315ee35b11287bb10baa94e0060f550c5e862073ed25a751b6b1ac"
+  }
+}
