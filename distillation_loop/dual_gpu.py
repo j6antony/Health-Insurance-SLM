@@ -85,7 +85,7 @@ class DualGPURuntime:
             env.update(CUDA_VISIBLE_DEVICES='0,1', TOKENIZERS_PARALLELISM='false', OMP_NUM_THREADS='2')
             env.setdefault('NCCL_P2P_DISABLE', '1')
             env.setdefault('NCCL_IB_DISABLE', '1')
-            for key in ('OPENAI_API_KEY', 'GEMINI_API_KEY', 'SUPABASE_SECRET_KEY', 'KAGGLE_API_TOKEN', 'KAGGLE_KEY'):
+            for key in ('OPENAI_API_KEY', 'GEMINI_API_KEY', 'SUPABASE_SECRET_KEY', 'KAGGLE_API_TOKEN', 'KAGGLE_KEY', 'GITHUB_TOKEN'):
                 env.pop(key, None)
             started = time.monotonic()
             print(f'Starting {operation} on {processes} GPU worker(s); loading cached model weights.', flush=True)

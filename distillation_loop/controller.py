@@ -1,6 +1,7 @@
 """One bounded loop: generate, infer, get teacher targets, train, evaluate."""
 import json
 import math
+import os
 
 from self_instruct_pipeline.config import resolve_path
 from self_instruct_pipeline.persistence import Store, atomic_json, digest
@@ -207,7 +208,11 @@ def _run_loop(runtime, parent_config, config):
                 else:
                     checkpoint = runtime.train(pairs, schemas, directory / 'sft')
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
-                save_adapter_dataset(checkpoint, store.directory, round_id)
+                if os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1':
+                    from .github_backup import upload_latest_adapter
+                    upload_latest_adapter(store.directory)
+                else:
+                    save_adapter_dataset(checkpoint, store.directory, round_id)
                 evaluator.checkpoint_identity = checkpoint
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
