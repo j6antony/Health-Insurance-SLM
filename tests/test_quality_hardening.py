@@ -116,7 +116,7 @@ class QualityHardeningTests(unittest.TestCase):
 
     def test_smoke_explicitly_uses_smoke_mode(self):
         _, cfg = smoke_configs(load_config(), load_loop_config(), '/tmp/smoke-fixture')
-        self.assertEqual(cfg['evaluation']['mode'], 'synthetic_smoke')
+        self.assertEqual(cfg['evaluation']['mode'], 'fixed')
         self.assertEqual(cfg['quality']['minimum_deterministic_check_rate'], 0)
 
     def test_service_failure_does_not_exhaust_sample_quality_allowance(self):

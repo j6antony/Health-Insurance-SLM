@@ -26,11 +26,11 @@ def readiness(parent_config, config, check_runtime=True):
             result['test_examples'] = len(test)
         except (ValueError, KeyError, TypeError) as exc:
             issues.append(f'Benchmark contract: {exc}')
-    if config['evaluation']['mode'] in ('synthetic_smoke', 'automatic'):
+    if config['evaluation']['mode'] in ('synthetic_smoke', 'automatic', 'fixed'):
         result['performance_claims_allowed'] = False
         result['manual_review_required'] = False
-        result['reference_status'] = 'automatically checked synthetic silver'
-        result['generated_validation_target'] = config['development_examples_per_task'] * len(schemas)
+        result['reference_status'] = 'fixed locally authored synthetic references' if config['evaluation']['mode'] == 'fixed' else 'automatically checked synthetic silver'
+        result['generated_validation_target'] = 0 if config['evaluation']['mode'] == 'fixed' else config['development_examples_per_task'] * len(schemas)
     if check_runtime:
         expected = {'transformers': '4.57.3', 'trl': '0.25.1', 'peft': '0.18.0', 'lighteval': '0.11.0'}
         for package, required in expected.items():

@@ -1,8 +1,9 @@
-> Current default: full automatic verification, without manual review.
-> Use `TEST_RUN = False` and `evaluation.mode = "automatic"`. The loop generates
-> teacher-checked synthetic validation references and labels them automatically
-> checked silver. Reviewed benchmark files are required only in explicit reviewed
-> mode. See [the current evaluation contract](data/evaluation/README.md).
+> Current default: load the bundled 540-case fixed evaluation dataset, with no
+> parent API calls for evaluation-data generation. Use `TEST_RUN = False` and
+> `evaluation.mode = "fixed"`. Teacher-generated training data, replay, selection
+> and GitHub uploads continue. Smoke runs select 18 saved cases from the same file.
+> See [the fixed evaluation contract](data/evaluation/README.md).
+
 
 
 # Notebook training and evaluation loop

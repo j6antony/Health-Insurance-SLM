@@ -1,3 +1,13 @@
+# Fixed evaluation update
+
+The default now loads the saved 540-case synthetic benchmark instead of generating
+validation through the API. Both full and smoke modes have zero evaluation-data
+construction calls. The schema/evidence/hash/coverage checks and controller path
+are covered by tests. The corpus has 10 families and 3 challenge variants per task;
+it is development data, not independently reviewed clinical gold. See
+[data/evaluation/README.md](data/evaluation/README.md). Earlier missing-reviewed-data
+notes below describe explicit reviewed mode, not the current fixed default.
+
 # Distillation loop hardening — November 10, 2026
 
 Re-reviewed against the updated “Distillation Loop Recommendations” chat and

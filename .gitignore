@@ -14,3 +14,5 @@ frontend/dist/
 !/data/evaluation/
 /data/evaluation/*
 !/data/evaluation/README.md
+!/data/evaluation/fixed_validation_v1.jsonl
+!/data/evaluation/fixed_validation_v1.manifest.json

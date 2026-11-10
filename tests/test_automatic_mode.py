@@ -12,6 +12,7 @@ import test_distillation_loop as fixtures
 class AutomaticModeTests(unittest.TestCase):
     def test_full_default_uses_automatic_checks_without_external_benchmarks(self):
         config=load_loop_config()
+        config['evaluation'] = {'mode': 'automatic'}
         self.assertEqual(config['evaluation']['mode'],'automatic')
         self.assertEqual(config['max_rounds'],5)
         config['evaluation']['validation_path']='/nonexistent/validation.jsonl'
@@ -34,9 +35,9 @@ class AutomaticModeTests(unittest.TestCase):
         self.assertFalse(result['promotion']['accepted'])
         self.assertEqual(runtime.restores[-1],result['best_checkpoint'])
 
-    def test_notebooks_default_to_full_automatic_mode_and_have_matching_cells(self):
+    def test_notebooks_default_to_full_fixed_mode_and_have_matching_cells(self):
         books=[json.loads(Path(name).read_text()) for name in ('distillation.ipynb','notebook77892919a9_fixed.ipynb')]
         self.assertEqual([c['source'] for c in books[0]['cells']],[c['source'] for c in books[1]['cells']])
         settings=next(''.join(c['source']) for c in books[0]['cells'] if c['cell_type']=='code' and 'TEST_RUN = False' in ''.join(c.get('source',[])))
-        self.assertIn('loop_config["evaluation"]["mode"] = "automatic"',settings)
-        self.assertIn('distillation_loop_automatic_v1',settings)
+        self.assertIn('loop_config["evaluation"]["mode"] = "fixed"',settings)
+        self.assertIn('distillation_loop_fixed_v1',settings)

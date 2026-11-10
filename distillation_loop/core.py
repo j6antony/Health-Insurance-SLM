@@ -145,8 +145,12 @@ def load_loop_config(path='config/distillation_loop.json'):
     if type(value['feedback_strength']) not in (int, float) or not math.isfinite(value['feedback_strength']) or value['feedback_strength'] < 0:
         raise ValueError('feedback_strength must be nonnegative and finite')
     evaluation = value.get('evaluation', {})
-    if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke', 'automatic'):
+    if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke', 'automatic', 'fixed'):
         raise ValueError('Invalid evaluation mode')
+    if evaluation['mode'] == 'fixed':
+        for key in ('validation_path', 'manifest_path'):
+            if not isinstance(evaluation.get(key), str) or not evaluation[key]:
+                raise ValueError('Fixed evaluation requires validation and manifest paths')
     if evaluation['mode'] == 'reviewed':
         minimum = evaluation.get('minimum_test_examples_per_task')
         if type(minimum) is not int or minimum < 30 or value['development_examples_per_task'] < 30:

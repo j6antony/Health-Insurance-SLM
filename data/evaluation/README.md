@@ -1,21 +1,64 @@
-# Automatic mode is now the default
+# Bundled fixed evaluation: default full-run workflow
 
-Full notebook runs use `evaluation.mode = "automatic"` and `TEST_RUN = False`.
-The existing pipeline generates and freezes synthetic validation references (30
-per task) and checks them with schema/evidence validation and the parent audit.
-No manually reviewed input files, human reviewer metadata, or adjudication queue
-are required in this mode. Failed answers still require bounded repair or replacement.
-Generated records are `automatically_checked_silver` with `human_reviewed: false`.
+The saved dataset is `fixed_validation_v1.jsonl`, with its companion
+`fixed_validation_v1.manifest.json`. It contains **540 cases: 30 for each of 18
+tasks**, arranged as 10 task-specific families and 3 challenge variants. Variants
+cover the base task, an unrelated conflicting case that must not be merged, and
+untrusted document-embedded instructions. Inputs are unique; shared families are
+intentional. This is a synthetic regression suite, not 540 independent real-world
+patients or an expert-reviewed medical benchmark.
 
-Automatic training and GitHub checkpoint uploads proceed normally. The best
-validation checkpoint is restored and recorded as `selected_checkpoint`. The
-independent-gold `promotion` gate is not claimed as satisfied. This setting does
-not turn synthetic references into independent clinical ground truth.
-Use the new `distillation_loop_automatic_v1` output folder for a full run; previous
-run folders remain intact. API budgets are still enforced. Preflight lists the
-540-reference generation target rather than requiring missing reviewed files.
+`evaluation.mode = "fixed"` is the default. The loader checks the dataset version,
+content hash, schema hash, all task counts, reference schema/evidence, provenance,
+and unique IDs/inputs. It reads the file directly; it does not regenerate it or
+make parent API calls. A missing, altered or incompatible file is an error with
+**no fallback to paid generation**. Both files are explicitly included by Git's
+ignore rules so they travel with the repository. Sync the updated repository into
+Kaggle before running the notebook; merely updating the notebook is insufficient.
 
-The contract below applies only when explicitly selecting `evaluation.mode = "reviewed"`.
+The full notebook defaults to `TEST_RUN = False` and a new
+`distillation_loop_fixed_v1` run directory. The student answers all 540 cases for
+its baseline and after each round. Student inference still consumes GPU time.
+References stay fixed across rounds and reruns. The existing loop records their
+hash in run state. Evaluation records are excluded from curriculum generation;
+they are never used as SFT targets or teacher demonstrations.
+
+Training remains unchanged: the default round targets 72 new pairs, with 25%
+independently code-computed fictional-rule templates and the remainder generated
+and audited by the parent API. Replay, task feedback, regression checks, checkpoint
+selection and GitHub uploads continue. API budgets now cover training generation
+and verification, not construction of the evaluation set. Exact reference-based
+prose scoring is conservative and may score valid paraphrases low; it is not a
+clinical entailment judge. The best experimental checkpoint is selected normally;
+synthetic results do not satisfy the independent-gold promotion gate.
+
+Smoke runs deterministically select one saved example per task (18 total), also
+without paid evaluation-data generation. `automatic` and `synthetic_smoke` modes
+remain available explicitly for legacy/generated-development workflows. Select
+`reviewed` only to use actual independently reviewed benchmark inputs.
+
+## Reproducibility and limits
+
+`python3 -m distillation_loop.build_fixed_evaluation` is a maintainer command that
+reproduces the checked-in dataset locally, without API access. It is **not** called
+by training. Treat a released version as immutable; changes require a new dataset
+version and a new run folder. The manifest describes the corpus and provenance.
+
+The source records use explicitly fictional/nonbillable catalogs, exercise
+policies and handling rules. They cover source grounding, negation, missing and
+unreadable values, conflicting sources, date applicability, AND/OR, exceptions,
+calculation boundaries, attribution, planned versus completed actions, scope and
+injection. No real code meanings, medical guidelines or legal obligations are
+asserted as authoritative. Mechanical checks and authored references do not
+establish real-world generalization or eliminate semantic leakage. The 540 cases
+are a reusable development/selection benchmark, not an untouched final test set.
+
+Run `python3 -m distillation_loop.preflight --skip-runtime` to confirm that all
+540 cases load with `generated_validation_target: 0` before a Kaggle run.
+
+## Optional independently reviewed mode
+
+The rest of this document describes explicit reviewed mode, not the default.
 
 # Reviewed evaluation and adjudication
 

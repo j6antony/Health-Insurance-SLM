@@ -9,7 +9,7 @@
     "schema_evidence_valid_rate": 0.98
   },
   "feedback_strength": 4.0,
-  "output_dir": "outputs/distillation_loop_automatic_v1",
+  "output_dir": "outputs/distillation_loop_fixed_v1",
   "training": {
     "max_sequence_length": 4096,
     "epochs_per_round": 1,
@@ -26,10 +26,9 @@
   },
   "random_seed": 42,
   "evaluation": {
-    "mode": "automatic",
-    "validation_path": "data/evaluation/validation.jsonl",
-    "test_path": "data/evaluation/test.jsonl",
-    "minimum_test_examples_per_task": 30
+    "mode": "fixed",
+    "validation_path": "data/evaluation/fixed_validation_v1.jsonl",
+    "manifest_path": "data/evaluation/fixed_validation_v1.manifest.json"
   },
   "quality": {
     "max_task_regression": 0.0,

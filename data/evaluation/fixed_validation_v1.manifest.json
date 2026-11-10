@@ -1,0 +1,43 @@
+{
+  "version": "fixed-synthetic-v1",
+  "sha256": "e45f94f165bb9b47c39fc3d7318fea09f32d15908dff84e7209f07de2d80efc1",
+  "total_examples": 540,
+  "examples_per_task": {
+    "icd_code_explanation": 30,
+    "hcpcs_code_explanation": 30,
+    "clinical_coding": 30,
+    "denial_explanation": 30,
+    "appeals_process_qa": 30,
+    "policy_coverage_qa": 30,
+    "eligibility_benefits_qa": 30,
+    "patient_billing": 30,
+    "compliance_qa": 30,
+    "support_chat": 30,
+    "claim_scrubbing": 30,
+    "document_classification": 30,
+    "field_extraction": 30,
+    "policy_summarization": 30,
+    "claim_history_summarization": 30,
+    "support_call_summarization": 30,
+    "appeal_drafting": 30,
+    "medical_necessity_support": 30
+  },
+  "families_per_task": 10,
+  "variants_per_family": 3,
+  "case_types": {
+    "supported": 114,
+    "insufficient_evidence": 180,
+    "contradiction": 60,
+    "unsupported_request": 12,
+    "date_mismatch": 6,
+    "prompt_injection": 54,
+    "conditional": 90,
+    "unreadable": 15,
+    "no_issue": 6,
+    "ambiguous": 3
+  },
+  "reference_status": "locally authored and mechanically checked synthetic; no human/expert review",
+  "schema_hash": "9d70e33a29e530dd914dc7db10e3ba94151de14b0f7de9018750ee981757139c",
+  "api_calls_to_generate": 0,
+  "training_use": false
+}

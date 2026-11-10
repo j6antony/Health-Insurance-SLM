@@ -8,10 +8,12 @@ from self_instruct_pipeline.validation import validate_answer, validate_schema, 
 
 def load_benchmarks(config, schemas):
     settings = config.get('evaluation', {})
+    if settings.get('mode') == 'fixed':
+        return load_fixed_validation(config, schemas), []
     if settings.get('mode') in ('synthetic_smoke', 'automatic'):
         return None, []
     if settings.get('mode') != 'reviewed':
-        raise ValueError('evaluation.mode must be reviewed, automatic, or synthetic_smoke')
+        raise ValueError('evaluation.mode must be fixed, reviewed, automatic, or synthetic_smoke')
     splits = []
     seen_ids, seen_sources = set(), set()
     dedup = Deduplicator([])
@@ -76,3 +78,43 @@ def comparison(baseline, selected):
     return {'baseline': baseline, 'selected': selected, 'per_task_delta': deltas,
             'regressed_tasks': [task for task, delta in deltas.items() if delta < 0],
             'macro_delta': selected['macro_task_score'] - baseline['macro_task_score']}
+
+
+def load_fixed_validation(config, schemas):
+    """Load only the shipped versioned corpus. Never call a teacher or repair it."""
+    from .build_fixed_evaluation import VERSION
+    from self_instruct_pipeline.deduplicator import fingerprint
+    settings = config['evaluation']
+    path = resolve_path(settings['validation_path'])
+    manifest_path = resolve_path(settings['manifest_path'])
+    if not path.is_file() or not manifest_path.is_file():
+        raise ValueError('Missing bundled fixed evaluation data/manifest. Sync data/evaluation/fixed_validation_v1* from the repository. No API generation will be substituted.')
+    rows = read_jsonl(path)
+    import json
+    manifest = json.loads(manifest_path.read_text())
+    if (manifest.get('version') != VERSION or manifest.get('sha256') != digest(rows)
+            or manifest.get('schema_hash') != digest(schemas)):
+        raise ValueError('Fixed evaluation data, schema, or manifest hash has changed')
+    counts = Counter(item['record']['task'] for item in rows)
+    minimum = config['development_examples_per_task']
+    if (set(counts) != set(schemas) or any(counts[t] < minimum for t in schemas)
+            or len(rows) != manifest.get('total_examples')
+            or dict(counts) != manifest.get('examples_per_task')):
+        raise ValueError('Fixed evaluation task coverage disagrees with config/manifest')
+    if len({item['record']['id'] for item in rows}) != len(rows) or len({fingerprint(item['record']) for item in rows}) != len(rows):
+        raise ValueError('Duplicate fixed evaluation cases')
+    for item in rows:
+        record = item['record']
+        if item.get('verification', {}).get('status') != 'locally_checked_synthetic' or item['verification'].get('human_reviewed') is not False:
+            raise ValueError('Fixed evaluation provenance must remain locally checked synthetic')
+        if 'review' in item:
+            raise ValueError('Bundled synthetic evaluation is not independently reviewed gold')
+        check_hidden_fields(record['scenario']['context'])
+        validate_answer(record, item['reference'], schemas[record['task']])
+    # Smoke runs use a deterministic per-task subset; verify the complete file first.
+    selected = []; used = Counter()
+    for item in rows:
+        task = item['record']['task']
+        if used[task] < minimum:
+            selected.append(item); used[task] += 1
+    return selected

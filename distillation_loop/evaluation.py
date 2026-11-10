@@ -109,8 +109,9 @@ class LightevalEvaluator:
         # aggregation; micro metrics are reported separately from the stop gate.
         aggregations = metric.get_corpus_aggregations() if metric else {name: statistics.mean for name in ('task_score', 'schema_evidence_valid')}
         report['lighteval_corpus'] = {name: fn([r[name] for r in rows]) for name, fn in aggregations.items()}
+        fixed = all(x.get('verification', {}).get('status') == 'locally_checked_synthetic' for x in development)
         report.update(engine='reviewed-reference-and-human-adjudication' if reviewed else 'lighteval-0.11.0-custom-metrics',
-                      reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'automatically checked synthetic references; no human review or independent gold'),
+                      reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'fixed locally authored synthetic references; no independent expert review' if fixed else 'automatically checked synthetic references; no human review or independent gold'),
                       scoring=SCORING_VERSION, adjudications_hash=digest(judgments),
                       benchmark_hash=digest(development), generation_key=generation_key)
         output_dir.mkdir(parents=True,exist_ok=True)
