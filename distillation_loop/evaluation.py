@@ -6,6 +6,7 @@ from importlib.metadata import version
 from self_instruct_pipeline.persistence import atomic_json, atomic_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
 from .core import aggregate_scores, score_response
+from .student import infer_payloads
 
 
 def require_training_versions():
@@ -44,14 +45,15 @@ class LightevalEvaluator:
         metric = make_metric()
         rows = []
         print(f'Evaluating {output_dir.name}: {len(development)} student generations.', flush=True)
-        for index, item in enumerate(development, 1):
+        predictions = infer_payloads(self.runtime, [target_payload(item['record'], self.schemas) for item in development])
+        if len(predictions) != len(development):
+            raise ValueError('Evaluation predictions are incomplete')
+        for index, (item, prediction) in enumerate(zip(development, predictions), 1):
             record, reference = item['record'], item['reference']
             payload = target_payload(record, self.schemas)
             # Reference choices and hidden labels are passed only to the metric,
             # never to model.generate or the student's input tokenizer.
-            print(f'Evaluation {index}/{len(development)}: {record["task"]} — generating locally', flush=True)
-            prediction = self.runtime.infer(payload)
-            print(f'Evaluation {index}/{len(development)}: generation finished', flush=True)
+            print(f'Evaluation {index}/{len(development)}: {record["task"]} — scoring', flush=True)
             doc = Doc(query=json.dumps(payload, ensure_ascii=False),
                       choices=[json.dumps(reference, ensure_ascii=False)], gold_index=0,
                       specific={'record':record,'schemas':self.schemas,'truncated':prediction['truncated']})

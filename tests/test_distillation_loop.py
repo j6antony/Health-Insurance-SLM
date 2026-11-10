@@ -183,15 +183,29 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(runtime.trains,[])
         self.assertEqual(self.data_objects,[])
 
-    def test_unfinished_round_restarts_after_evaluation_failure(self):
+    def test_finished_training_is_reused_after_evaluation_failure(self):
         self.config['max_rounds']=1
         runtime=FakeRuntime();evaluator=FakeEvaluator([.1,.7,.95],fail_at=2)
         with self.assertRaisesRegex(RuntimeError,'evaluation interruption'):self.run_loop(runtime,evaluator)
         self.assertEqual(len(runtime.trains),1)
         result=self.run_loop(runtime,evaluator)
         self.assertEqual(result['completed_rounds'],1)
-        self.assertEqual(len(runtime.trains),2)
+        self.assertEqual(len(runtime.trains),1)
         self.assertEqual(runtime.restores[-1],result['best_checkpoint'])
+
+    def test_backup_failure_reuses_finished_training_on_resume(self):
+        from distillation_loop.kaggle_backup import AdapterBackupError
+        self.config['max_rounds'] = 1
+        runtime = FakeRuntime(); evaluator = FakeEvaluator([.1, .95])
+        with patch('distillation_loop.controller.save_adapter_dataset', side_effect=AdapterBackupError('upload failed')):
+            with self.assertRaises(AdapterBackupError): self.run_loop(runtime, evaluator)
+        self.assertEqual(len(runtime.trains), 1)
+        self.assertTrue((Path(self.tmp.name)/'round_01/training_complete.json').exists())
+        with patch('distillation_loop.controller.save_adapter_dataset') as backup:
+            result = self.run_loop(runtime, evaluator)
+            backup.assert_called_once()
+        self.assertEqual(len(runtime.trains), 1)
+        self.assertEqual(result['completed_rounds'], 1)
 
     def test_interrupted_training_restarts_from_previous_adapter(self):
         self.config['max_rounds']=1

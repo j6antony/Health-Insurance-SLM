@@ -8,18 +8,25 @@ from self_instruct_pipeline.validation import ValidationError, validate_answer
 from .core import ResponseError, clean_response, feedback_weights, satisfactory, validate_report
 from .data import CurriculumData, frozen_development
 from .evaluation import LightevalEvaluator
+from .student import infer_payloads
+from .kaggle_backup import check_backup_setup, save_adapter_dataset
 
 
 def save_predictions(runtime, records, schemas, directory):
     store = Store(directory)
     existing = {row['scenario_id']: row for row in
                 store.unique_records('student_responses.jsonl', 'scenario_id')}
+    pending = []
     for record in records:
         if record['id'] in existing:
             if existing[record['id']]['scenario_hash'] != digest(record):
                 raise ValueError('Student prediction belongs to a changed scenario')
-            continue
-        prediction = runtime.infer(target_payload(record, schemas))
+        else:
+            pending.append(record)
+    predictions = infer_payloads(runtime, [target_payload(record, schemas) for record in pending])
+    if len(predictions) != len(pending):
+        raise ValueError('Missing student diagnostic predictions')
+    for record, prediction in zip(pending, predictions):
         cleaned = None
         error = prediction.get('error')
         try:
@@ -49,6 +56,7 @@ def run_loop(runtime, parent_config, config):
 
 def _run_loop(runtime, parent_config, config):
     store = Store(resolve_path(config['output_dir']))
+    check_backup_setup()
     schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
     settings_hash = digest({'config': config, 'parent': parent_config,
                             'schemas': schemas, 'student': runtime.identity()})
@@ -132,7 +140,20 @@ def _run_loop(runtime, parent_config, config):
                     pairs = new_pairs
 
                 # 4. Train the existing student adapter, then evaluate it.
-                checkpoint = runtime.train(pairs, schemas, directory / 'sft')
+                trained_path = directory / 'training_complete.json'
+                training_hash = digest({'pairs': pairs, 'initial': state['last_checkpoint'],
+                                        'training': config['training'], 'student': runtime.identity()})
+                if trained_path.exists():
+                    trained = json.loads(trained_path.read_text())
+                    if trained['training_hash'] != training_hash:
+                        raise ValueError('Saved round training inputs changed; refusing to reuse checkpoint')
+                    checkpoint = trained['checkpoint']
+                    runtime.restore(checkpoint)
+                    print('Reusing finished round training; retrying backup/evaluation.', flush=True)
+                else:
+                    checkpoint = runtime.train(pairs, schemas, directory / 'sft')
+                    atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
+                save_adapter_dataset(checkpoint, store.directory, round_id)
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
 

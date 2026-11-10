@@ -292,3 +292,25 @@ The saved development set and verified training pairs are reused. Cleanup now
 preserves the original training exception if emptying the damaged CUDA cache also
 fails. This fixes the observed replication configuration; full CUDA validation
 still requires rerunning on Kaggle.
+
+## Two-GPU runtime (current Kaggle notebook)
+
+The notebook now uses `DualGPURuntime`: two-process DDP training and sharded,
+batched inference on Kaggle T4 x2. See [KAGGLE_TWO_GPU.md](KAGGLE_TWO_GPU.md) for
+setup, memory behavior, timing, and resume instructions. This supersedes the earlier
+single-visible-GPU notebook workaround; the original `StudentRuntime` remains
+available for explicit single-GPU use. Restart before switching modes and do not
+retain a notebook-loaded model on GPU 0 when launching the dual-GPU workers.
+
+## Automatic adapter datasets (current behavior)
+
+The notebook now uploads each trained adapter to its own private Kaggle dataset
+before evaluating that round. Configure the Kaggle Secrets described in
+[KAGGLE_ADAPTER_BACKUPS.md](KAGGLE_ADAPTER_BACKUPS.md). Adapters are staged locally
+and then uploaded; the notebook cannot write directly into `/kaggle/input`.
+
+A completed training phase is recorded in `training_complete.json`. If upload or
+evaluation is interrupted after that marker, resuming restores that adapter and
+retries the remaining steps. This supersedes earlier documentation stating that
+a failed evaluation always repeats training. Training that never completed still
+restarts from the last completed-round adapter as before.
