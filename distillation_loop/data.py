@@ -129,3 +129,29 @@ class CurriculumData:
     def answer_pairs(self):
         self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()
         return checked_pairs(self.pipeline)
+
+
+def repair_development_task(base_config, loop_config, output_dir, task='field_extraction'):
+    """Explicit recovery: permit attempt 4 for one latest failed candidate, not a reset."""
+    output_dir = Path(output_dir)
+    if (output_dir/'development.jsonl').exists():
+        return {'status': 'development_already_frozen'}
+    config = copy.deepcopy(base_config)
+    config['generation']['task_weights'] = {}
+    config['paths']['output_dir'] = str(output_dir/'development_generation')
+    pipeline = Pipeline(config)
+    if task not in pipeline.schemas:
+        raise ValueError('Unknown development task')
+    with pipeline.store.lock():
+        pipeline.initialize_manifest()
+        pairs = checked_pairs(pipeline)
+        if sum(r['task'] == task for r, _ in pairs) >= loop_config['development_examples_per_task']:
+            return {'status': 'task_already_covered', 'task': task}
+        done = {r['id'] for r, _ in pairs}
+        candidates = [r for r in pipeline.accepted if r['task'] == task and r['id'] not in done]
+        if not candidates:
+            raise ValueError('No existing candidate to repair; no API calls made')
+        candidate = candidates[-1]
+        pipeline.answer(allow_partial=True, scenario_ids={candidate['id']}, max_sample_attempts=4)
+        return {'task': task, 'scenario_id': candidate['id'],
+                'validated': any(r['id'] == candidate['id'] for r, _ in checked_pairs(pipeline))}

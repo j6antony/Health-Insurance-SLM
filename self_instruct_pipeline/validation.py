@@ -149,9 +149,16 @@ def validate_answer(record, answer, schema):
             if not evidence['quote'].strip() or not any(evidence['quote'] in d['text'] for d in docs[doc_id]):
                 fail(f'Evidence quote for {doc_id!r} must be a nonempty exact contiguous substring of its source text')
     fields = answer.get('fields', [])
-    names = [f['field_name'] for f in fields]
-    if len(names) != len(set(names)):
-        fail('Duplicate extracted fields: emit at most one entry per field_name; mark a directly supported source value requires_review=true when conflicting')
+    grouped = {}
+    for field in fields:
+        grouped.setdefault(field['field_name'], []).append(field)
+    for name, entries in grouped.items():
+        if len(entries) > 1:
+            values = [' '.join(f['value'].casefold().split()) for f in entries]
+            if len(values) != len(set(values)):
+                fail(f'Duplicate extracted value for {name}; emit agreeing values once')
+            if not all(f['requires_review'] for f in entries):
+                fail(f'Conflicting extracted values for {name} must all require review')
     target_id = record['scenario']['context'].get('target_document_id')
     for field in fields:
         matches = [d for d in pages if field['evidence'] in d['text'] and d['page_number'] == field['page_number']]
