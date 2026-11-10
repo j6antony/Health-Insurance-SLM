@@ -11,3 +11,6 @@ frontend/dist/
 .env
 .env.*
 !.env.example
+!/data/evaluation/
+/data/evaluation/*
+!/data/evaluation/README.md

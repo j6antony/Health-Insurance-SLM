@@ -1,7 +1,7 @@
 {
   "max_rounds": 5,
   "scenarios_per_round": 72,
-  "development_examples_per_task": 3,
+  "development_examples_per_task": 30,
   "development_fill_attempts": 3,
   "thresholds": {
     "macro_task_score": 0.9,
@@ -21,6 +21,14 @@
     "lora_dropout": 0.05,
     "replay_previous_rounds": true
   },
-  "inference": {"max_new_tokens": 1024},
-  "random_seed": 42
+  "inference": {
+    "max_new_tokens": 1024
+  },
+  "random_seed": 42,
+  "evaluation": {
+    "mode": "reviewed",
+    "validation_path": "data/evaluation/validation.jsonl",
+    "test_path": "data/evaluation/test.jsonl",
+    "minimum_test_examples_per_task": 30
+  }
 }

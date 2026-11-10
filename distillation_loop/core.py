@@ -66,6 +66,8 @@ def score_response(record, reference, raw, schemas, truncated=False):
         return {'task_score': 0.0, 'schema_evidence_valid': 0.0}
     if 'document_type' in reference:
         score = float(answer['document_type'] == reference['document_type'])
+    elif answer.get('requires_review') != reference.get('requires_review'):
+        score = 0.0
     elif 'fields' in reference:
         key = lambda field: (field['field_name'], normalize(field['value']), field['requires_review'])
         score = set_f1(map(key, answer['fields']), map(key, reference['fields']))
@@ -76,11 +78,13 @@ def score_response(record, reference, raw, schemas, truncated=False):
     else:
         text = lambda value: '\n'.join([value['answer'], value.get('draft', ''),
                                        '\n'.join(value.get('criteria_assessment', []))])
-        score = rouge_l(text(answer), text(reference))
+        # Exact normalized reference agreement is deliberately conservative.
+        # Lexical overlap must never reward a reversed conclusion.
+        score = float(normalize(text(answer)) == normalize(text(reference)))
         # These gates preserve important no-issue / missing-information distinctions
         # while allowing the natural-language wording to differ.
         for field in ('issues', 'missing_information'):
-            if bool(answer.get(field)) != bool(reference.get(field)):
+            if {normalize(x) for x in answer.get(field, [])} != {normalize(x) for x in reference.get(field, [])}:
                 score = 0.0
     return {'task_score': float(score), 'schema_evidence_valid': 1.0}
 
@@ -134,6 +138,16 @@ def load_loop_config(path='config/distillation_loop.json'):
             raise ValueError('Thresholds must be finite in (0, 1]')
     if type(value['feedback_strength']) not in (int, float) or not math.isfinite(value['feedback_strength']) or value['feedback_strength'] < 0:
         raise ValueError('feedback_strength must be nonnegative and finite')
+    evaluation = value.get('evaluation', {'mode': 'synthetic_smoke'})
+    if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke'):
+        raise ValueError('Invalid evaluation mode')
+    if evaluation['mode'] == 'reviewed':
+        minimum = evaluation.get('minimum_test_examples_per_task')
+        if type(minimum) is not int or minimum < 30 or value['development_examples_per_task'] < 30:
+            raise ValueError('Reviewed evaluation requires at least 30 examples per task per split')
+        for split in ('validation', 'test'):
+            if not isinstance(evaluation.get(f'{split}_path'), str) or not evaluation[f'{split}_path']:
+                raise ValueError('Reviewed evaluation requires benchmark paths')
     t = value['training']
     for key in ('max_sequence_length','epochs_per_round','max_steps_per_round','gradient_accumulation_steps','lora_rank','lora_alpha'):
         if type(t[key]) is not int or t[key] < 1:

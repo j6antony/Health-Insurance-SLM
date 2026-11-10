@@ -134,6 +134,11 @@ def validate_batch(records, quotas, difficulty, tasks, references):
 
 def validate_answer(record, answer, schema):
     validate_schema(answer, schema)
+    from .rule_checks import check_rules
+    try:
+        check_rules(record, answer)
+    except (ValueError, KeyError, IndexError, TypeError, ArithmeticError) as exc:
+        fail(f'Answer correctness check: {exc}')
     pages = record['scenario']['documents']
     docs = {}
     for page in pages:

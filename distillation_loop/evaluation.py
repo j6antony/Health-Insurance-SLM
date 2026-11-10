@@ -67,7 +67,8 @@ class LightevalEvaluator:
         report['lighteval_corpus'] = {name:fn([r[name] for r in rows])
                                      for name,fn in metric.get_corpus_aggregations().items()}
         report.update(engine='lighteval-0.11.0-custom-metrics',
-                      reference_status='frozen parent-checked synthetic development references; not independent gold')
+                      reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'synthetic smoke references; not independent gold'),
+                      scoring='strict normalized reference agreement; ROUGE is not a correctness gate')
         output_dir.mkdir(parents=True,exist_ok=True)
         atomic_jsonl(output_dir/'predictions.jsonl',rows)
         atomic_json(output_dir/'scores.json',report)

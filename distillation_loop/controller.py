@@ -8,6 +8,7 @@ from self_instruct_pipeline.validation import ValidationError, validate_answer
 from .core import ResponseError, clean_response, feedback_weights, satisfactory, validate_report
 from .data import CurriculumData, frozen_development
 from .evaluation import LightevalEvaluator
+from .benchmarks import load_benchmarks, comparison
 from .student import infer_payloads
 from .kaggle_backup import check_backup_setup, save_adapter_dataset
 
@@ -69,11 +70,12 @@ def _run_loop(runtime, parent_config, config):
         return passed(report), report['macro_task_score'], report['minimum_task_score']
 
     with store.lock():
+        reviewed, final_test = load_benchmarks(config, schemas)
         runtime.prepare()
         state = json.loads(state_path.read_text()) if state_path.exists() else None
         if state and state.get('settings_hash') != settings_hash:
             raise ValueError('Settings changed; use a new output directory')
-        development = frozen_development(parent_config, config, store.directory)
+        development = reviewed if reviewed is not None else frozen_development(parent_config, config, store.directory)
         evaluator = LightevalEvaluator(runtime, schemas, config['development_examples_per_task'])
 
         if state is None:
@@ -81,6 +83,7 @@ def _run_loop(runtime, parent_config, config):
             initial = runtime.save_checkpoint(store.path('initial_adapter'))
             state = {
                 'settings_hash': settings_hash, 'development_hash': digest(development),
+                'test_hash': digest(final_test),
                 'completed_rounds': 0, 'history': [], 'status': 'running',
                 'last_checkpoint': initial, 'best_checkpoint': initial,
                 'best_report': None, 'latest_report': None,
@@ -88,11 +91,27 @@ def _run_loop(runtime, parent_config, config):
             atomic_json(state_path, state)
         if state['development_hash'] != digest(development):
             raise ValueError('Frozen development set has changed')
+        if state.get('test_hash', digest([])) != digest(final_test):
+            raise ValueError('Frozen final test set has changed')
+
+        def finalize():
+            if final_test and 'final_comparison' not in state:
+                test_evaluator = LightevalEvaluator(runtime, schemas, config['evaluation']['minimum_test_examples_per_task'])
+                runtime.restore(str(store.path('initial_adapter')))
+                baseline = test_evaluator.evaluate(final_test, store.path('final_test_baseline'))
+                runtime.restore(state['best_checkpoint'])
+                selected = test_evaluator.evaluate(final_test, store.path('final_test_selected'))
+                for report in (baseline, selected):
+                    validate_report(report, schemas, config['evaluation']['minimum_test_examples_per_task'])
+                state['final_comparison'] = comparison(baseline, selected)
+                atomic_json(state_path, state)
+            runtime.restore(state['best_checkpoint'])
+            return state
+
         print('Restoring student adapter (local).', flush=True)
         runtime.restore(state['last_checkpoint'])
         if state['status'] != 'running':
-            runtime.restore(state['best_checkpoint'])
-            return state
+            return finalize()
 
         # Evaluate once before training. A successful baseline needs no training.
         if state['latest_report'] is None:
@@ -104,9 +123,9 @@ def _run_loop(runtime, parent_config, config):
                 state['status'] = 'thresholds_met'
             atomic_json(state_path, state)
             if passed(report):
-                return state
+                return finalize()
 
-        data = CurriculumData(parent_config, development, store.directory)
+        data = CurriculumData(parent_config, development + final_test, store.directory)
         try:
             data.open()
             for round_id in range(state['completed_rounds'] + 1, config['max_rounds'] + 1):
@@ -124,6 +143,13 @@ def _run_loop(runtime, parent_config, config):
                 new_pairs = [(record, answer) for record, answer in pairs if record['id'] not in previous]
                 new_records = [record for record, _ in new_pairs]
                 atomic_json(directory / 'generation_feedback.json', {'task_weights': weights})
+                from collections import Counter
+                atomic_json(directory / 'training_coverage.json', {
+                    'tasks': dict(Counter(r['task'] for r, _ in pairs)),
+                    'case_types': dict(Counter(r.get('case_type', 'unlabeled') for r, _ in pairs)),
+                    'difficulty': dict(Counter(r.get('difficulty', 'unlabeled') for r, _ in pairs)),
+                    'distinct_scenarios': len({r['id'] for r, _ in pairs}),
+                    'reference_status': 'automatically checked silver; teacher approval is not independent truth'})
 
                 # 2. Student predictions remain diagnostics, never training labels.
                 save_predictions(runtime, new_records, schemas, directory)
@@ -174,5 +200,4 @@ def _run_loop(runtime, parent_config, config):
         finally:
             data.close()
 
-        runtime.restore(state['best_checkpoint'])
-        return state
+        return finalize()

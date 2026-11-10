@@ -1,3 +1,13 @@
+> Evaluation update (November 10, 2026): the default configuration now requires
+> independently reviewed validation and test JSONL files, with 30 examples per
+> task in each split. See [the benchmark contract](data/evaluation/README.md).
+> Earlier descriptions below of automatic three-example development generation
+> apply only to explicit `evaluation.mode = "synthetic_smoke"` integration runs.
+> Free-text scoring uses strict normalized reference agreement rather than ROUGE.
+> Final test comparison runs only after checkpoint selection and never feeds
+> training feedback. Existing output directories require a new run directory
+> because evaluation settings and scoring have changed.
+
 # Notebook training and evaluation loop
 
 Open `distillation.ipynb` and run its cells in order on a CUDA GPU. Attach the full repository so the notebook can import `self_instruct_pipeline` and `distillation_loop`. The notebook installs `requirements-training.txt`, obtains credentials from the environment/Kaggle Secrets, and loads Qwen3-8B once in 4-bit mode. The existing inline Hugging Face credential has been removed.

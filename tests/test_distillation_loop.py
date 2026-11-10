@@ -143,6 +143,8 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.config=load_loop_config();self.config.update(output_dir=self.tmp.name,scenarios_per_round=2,max_rounds=3)
+        self.config['evaluation'] = {'mode': 'synthetic_smoke'}
+        self.config['development_examples_per_task'] = 3
         self.base=load_config()
         self.development=[{'record':record(i=999),'reference':{}}]
         self.data_objects=[]
