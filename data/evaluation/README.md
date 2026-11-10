@@ -1,3 +1,22 @@
+# Automatic mode is now the default
+
+Full notebook runs use `evaluation.mode = "automatic"` and `TEST_RUN = False`.
+The existing pipeline generates and freezes synthetic validation references (30
+per task) and checks them with schema/evidence validation and the parent audit.
+No manually reviewed input files, human reviewer metadata, or adjudication queue
+are required in this mode. Failed answers still require bounded repair or replacement.
+Generated records are `automatically_checked_silver` with `human_reviewed: false`.
+
+Automatic training and GitHub checkpoint uploads proceed normally. The best
+validation checkpoint is restored and recorded as `selected_checkpoint`. The
+independent-gold `promotion` gate is not claimed as satisfied. This setting does
+not turn synthetic references into independent clinical ground truth.
+Use the new `distillation_loop_automatic_v1` output folder for a full run; previous
+run folders remain intact. API budgets are still enforced. Preflight lists the
+540-reference generation target rather than requiring missing reviewed files.
+
+The contract below applies only when explicitly selecting `evaluation.mode = "reviewed"`.
+
 # Reviewed evaluation and adjudication
 
 The default run requires `validation.jsonl` and `test.jsonl`, each with at least

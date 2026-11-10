@@ -145,7 +145,7 @@ def load_loop_config(path='config/distillation_loop.json'):
     if type(value['feedback_strength']) not in (int, float) or not math.isfinite(value['feedback_strength']) or value['feedback_strength'] < 0:
         raise ValueError('feedback_strength must be nonnegative and finite')
     evaluation = value.get('evaluation', {})
-    if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke'):
+    if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke', 'automatic'):
         raise ValueError('Invalid evaluation mode')
     if evaluation['mode'] == 'reviewed':
         minimum = evaluation.get('minimum_test_examples_per_task')

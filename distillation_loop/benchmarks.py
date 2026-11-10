@@ -8,10 +8,10 @@ from self_instruct_pipeline.validation import validate_answer, validate_schema, 
 
 def load_benchmarks(config, schemas):
     settings = config.get('evaluation', {})
-    if settings.get('mode') == 'synthetic_smoke':
+    if settings.get('mode') in ('synthetic_smoke', 'automatic'):
         return None, []
     if settings.get('mode') != 'reviewed':
-        raise ValueError('evaluation.mode must be reviewed or synthetic_smoke')
+        raise ValueError('evaluation.mode must be reviewed, automatic, or synthetic_smoke')
     splits = []
     seen_ids, seen_sources = set(), set()
     dedup = Deduplicator([])

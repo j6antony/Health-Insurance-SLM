@@ -86,7 +86,10 @@ def frozen_development(base_config, loop_config, output_dir, parent=None):
             selected=[];used=Counter()
             for record,answer in pairs:
                 if used[record['task']]<per_task:
-                    selected.append({'record':record,'reference':answer})
+                    selected.append({'record':record,'reference':answer,
+                                     'verification': {'status': 'automatically_checked_silver',
+                                                      'method': 'schema_evidence_and_parent_audit',
+                                                      'human_reviewed': False}})
                     used[record['task']]+=1
             atomic_jsonl(path,selected)
             atomic_json(manifest,{'hash':digest(selected),'examples_per_task':per_task,

@@ -118,7 +118,9 @@ def _run_loop(runtime, parent_config, config):
                 state['release_checkpoint'] = state['best_checkpoint'] if state['promotion']['accepted'] else state['initial_checkpoint']
                 atomic_json(state_path, state)
             if not final_test:
-                state['promotion'] = {'accepted': False, 'reason': 'synthetic smoke evaluation only'}
+                state['promotion'] = {'accepted': False, 'reason': 'automatic synthetic evaluation; no independent gold benchmark'}
+                state['evaluation_status'] = 'automatically_evaluated'
+                state['selected_checkpoint'] = state['best_checkpoint']
                 atomic_json(state_path, state)
             runtime.restore(state.get('release_checkpoint', state['best_checkpoint']))
             return state

@@ -1,10 +1,8 @@
-> Evaluation update (November 10, 2026): default runs require independently
-> reviewed validation/test data, reviewed reasoning rubrics and adjudication for
-> unfamiliar answers. Regression, improvement and data-coverage gates protect model
-> promotion. See [the current benchmark and release contract](data/evaluation/README.md).
-> Earlier automatic three-example evaluation instructions below apply only to
-> explicit synthetic smoke runs. Use a new output directory for the new scoring
-> and curriculum contracts.
+> Current default: full automatic verification, without manual review.
+> Use `TEST_RUN = False` and `evaluation.mode = "automatic"`. The loop generates
+> teacher-checked synthetic validation references and labels them automatically
+> checked silver. Reviewed benchmark files are required only in explicit reviewed
+> mode. See [the current evaluation contract](data/evaluation/README.md).
 
 
 # Notebook training and evaluation loop

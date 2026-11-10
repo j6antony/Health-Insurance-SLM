@@ -204,7 +204,7 @@ class FullLoopIntegrationTests(unittest.TestCase):
             parent = MockParent()
             cfg = load_loop_config()
             cfg.update(output_dir=str(root / 'run'), max_rounds=1, scenarios_per_round=4, development_examples_per_task=1)
-            cfg['evaluation'].update(validation_path=str(root / 'validation.jsonl'), test_path=str(root / 'test.jsonl'), minimum_test_examples_per_task=1)
+            cfg['evaluation'].update(mode='reviewed', validation_path=str(root / 'validation.jsonl'), test_path=str(root / 'test.jsonl'), minimum_test_examples_per_task=1)
             for split in ('validation', 'test'):
                 rows = []
                 for task in SCHEMAS:
@@ -310,7 +310,7 @@ class FinalAdversarialTests(unittest.TestCase):
         from distillation_loop.preflight import readiness
         cfg = load_loop_config()
         with tempfile.TemporaryDirectory() as folder:
-            cfg['evaluation'].update(validation_path=f'{folder}/validation.jsonl', test_path=f'{folder}/test.jsonl')
+            cfg['evaluation'].update(mode='reviewed', validation_path=f'{folder}/validation.jsonl', test_path=f'{folder}/test.jsonl')
             result = readiness(load_config(), cfg, check_runtime=False)
         self.assertFalse(result['ready'])
         self.assertEqual(len(result['issues']), 2)

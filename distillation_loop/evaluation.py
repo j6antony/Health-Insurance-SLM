@@ -100,7 +100,7 @@ class LightevalEvaluator:
         if pending:
             raise ReviewRequired(f'{len(pending)} answers need independent adjudication: {output_dir}/review_queue.jsonl. Add adjudications.jsonl and resume; generations are frozen.')
         report = aggregate_scores(rows,self.schemas,self.minimum_examples)
-        report['grading_basis_counts'] = dict(Counter(row.get('grading_basis', 'synthetic_smoke_metric') for row in rows))
+        report['grading_basis_counts'] = dict(Counter(row.get('grading_basis', 'automatic_reference_metric') for row in rows))
         adjudicated = [row['correctness_review'] for row in rows if 'correctness_review' in row]
         report['human_adjudicated_count'] = len(adjudicated)
         if adjudicated:
@@ -110,7 +110,7 @@ class LightevalEvaluator:
         aggregations = metric.get_corpus_aggregations() if metric else {name: statistics.mean for name in ('task_score', 'schema_evidence_valid')}
         report['lighteval_corpus'] = {name: fn([r[name] for r in rows]) for name, fn in aggregations.items()}
         report.update(engine='reviewed-reference-and-human-adjudication' if reviewed else 'lighteval-0.11.0-custom-metrics',
-                      reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'synthetic smoke references; not independent gold'),
+                      reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'automatically checked synthetic references; no human review or independent gold'),
                       scoring=SCORING_VERSION, adjudications_hash=digest(judgments),
                       benchmark_hash=digest(development), generation_key=generation_key)
         output_dir.mkdir(parents=True,exist_ok=True)
