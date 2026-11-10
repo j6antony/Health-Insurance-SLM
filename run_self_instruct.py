@@ -14,10 +14,11 @@ def main(argv=None):
     parser.add_argument('command', choices=['dry-run', 'generate', 'answer', 'export', 'all', 'resume'])
     parser.add_argument('--config', help='JSON config; relative data paths resolve from the workspace root')
     parser.add_argument('--output-dir', help='Override the output directory, useful for isolated smoke runs')
-    parser.add_argument('--target', type=int, help='Accepted scenario target (can increase on resume)')
+    parser.add_argument('--target', type=int, help='Verified-pair target for all/resume; scenario target for generate')
     parser.add_argument('--batch-size', type=int, help='Override batch size for this isolated run')
     parser.add_argument('--seed-file', help='Override the explicit-task seed JSONL')
     parser.add_argument('--num-seed-examples', type=int, help='6-8 diverse demonstrations per request')
+    parser.add_argument('--strict-answers', action='store_true', help='Return an error if answers/verified-pair target remain incomplete; good pairs are still exported')
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -42,11 +43,18 @@ def main(argv=None):
             # Reconstruct under lock, so concurrent invocations cannot race reads.
             pipeline = Pipeline(config)
             pipeline.initialize_manifest()
-            if args.command in ('generate', 'all', 'resume'):
+            if args.command in ('all', 'resume'):
+                result = pipeline.build_pairs()
+                if args.strict_answers and result['status'] != 'target_reached':
+                    raise ValueError('Verified-pair target not reached; valid partial dataset was exported')
+            elif args.command == 'generate':
                 pipeline.generate()
-            if args.command in ('answer', 'all', 'resume'):
-                pipeline.answer()
-            if args.command in ('export', 'all', 'resume'):
+            elif args.command == 'answer':
+                try:
+                    pipeline.answer(allow_partial=not args.strict_answers)
+                finally:
+                    pipeline.export()
+            elif args.command == 'export':
                 pipeline.export()
             pipeline.checkpoint()
         return 0

@@ -121,6 +121,11 @@ class CurriculumData:
         p.generate();p.checkpoint()
         return p.accepted
 
+    def verified_pairs(self, target, weights):
+        self.pipeline.scheduler.weights = weights
+        self.pipeline.build_pairs(target)
+        return checked_pairs(self.pipeline)[:target]
+
     def answer_pairs(self):
         self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()
         return checked_pairs(self.pipeline)

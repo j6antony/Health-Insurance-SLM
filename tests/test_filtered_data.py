@@ -102,6 +102,98 @@ class FilterTests(unittest.TestCase):
         row['scenario']['documents'][1]['page_number'] = 1
         with self.assertRaises(ValidationError): validate_scenario(row, SCHEMAS, [])
 
+    def test_verified_pair_target_generates_replacement_for_failed_answer(self):
+        class FirstScenarioFails(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                result = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'teacher_answer' and 'package 1:' in json.loads(messages[1]['content'])['scenario']['documents'][0]['text']:
+                    result['EXTRA'] = 'invalid'
+                return result
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_config(); config['paths']['output_dir'] = folder
+            config['generation'].update(target_accepted_scenarios=2, batch_size=2)
+            parent = FirstScenarioFails(); pipeline = Pipeline(config, parent)
+            report = pipeline.build_pairs()
+            self.assertEqual(report['status'], 'target_reached')
+            self.assertEqual(report['validated_pairs'], 2)
+            self.assertEqual(report['accepted_scenarios'], 3)
+            later = MockParent()
+            self.assertEqual(Pipeline(config, later).build_pairs(target=2)['validated_pairs'], 2)
+            self.assertEqual(later.calls, [])
+
+    def test_pair_exhaustion_exports_partial_without_claiming_success(self):
+        class BadAnswers(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'teacher_answer': value['EXTRA'] = 'bad'
+                return value
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_config(); config['paths']['output_dir'] = folder
+            config['generation'].update(target_accepted_scenarios=2, batch_size=2)
+            pipeline = Pipeline(config, BadAnswers())
+            report = pipeline.build_pairs(max_replacement_passes=0)
+            self.assertEqual(report['status'], 'partial')
+            self.assertEqual(report['accepted_scenarios'], 2)
+            self.assertEqual(report['validated_pairs'], 0)
+            self.assertTrue((Path(folder)/'qwen3_8b_sft.jsonl').exists())
+            later = MockParent()
+            Pipeline(config, later).build_pairs(target=2, max_replacement_passes=0)
+            self.assertEqual(later.calls, [])
+
+    def test_malformed_audit_retries_only_audit_for_same_answer(self):
+        class MalformedAudit(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'answer_audit' and not hasattr(self, 'bad_audit'):
+                    self.bad_audit = True
+                    return {'malformed': True}
+                return value
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_config(); config['paths']['output_dir'] = folder
+            config['generation'].update(target_accepted_scenarios=1, batch_size=1)
+            parent = MalformedAudit(); pipeline = Pipeline(config, parent)
+            pipeline.generate(); pipeline.answer(allow_partial=True)
+            self.assertEqual(sum(op == 'teacher_answer' for op, _ in parent.calls), 1)
+            self.assertEqual(sum(op == 'answer_audit' for op, _ in parent.calls), 2)
+            self.assertEqual(len(pipeline.store.read('validated_answers.jsonl')), 1)
+
+    def test_normal_cli_exports_and_reports_partial_target(self):
+        from run_self_instruct import main
+        import contextlib
+        import io
+        class BadAnswers(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'teacher_answer': value['EXTRA'] = 'bad'
+                return value
+        with tempfile.TemporaryDirectory() as folder:
+            parent = BadAnswers()
+            with patch('run_self_instruct.Pipeline', side_effect=lambda cfg: Pipeline(cfg, parent)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                args = ['all', '--output-dir', folder, '--target', '2', '--batch-size', '2']
+                self.assertEqual(main(args), 0)
+                report = json.loads((Path(folder)/'pair_build_report.json').read_text())
+                self.assertEqual(report['status'], 'partial')
+                self.assertEqual(report['validated_pairs'], 0)
+                calls = len(parent.calls)
+                self.assertEqual(main(args + ['--strict-answers']), 1)
+                self.assertEqual(len(parent.calls), calls)
+                self.assertTrue((Path(folder)/'qwen3_8b_sft.jsonl').exists())
+
+    def test_strict_answer_retries_are_also_cumulative(self):
+        class BadAnswers(MockParent):
+            def generate_json(self, messages, schema, operation='generation', temperature=None):
+                value = super().generate_json(messages, schema, operation, temperature)
+                if operation == 'teacher_answer': value['EXTRA'] = 'bad'
+                return value
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_config(); config['paths']['output_dir'] = folder
+            config['generation'].update(target_accepted_scenarios=2, batch_size=2)
+            parent = BadAnswers(); pipeline = Pipeline(config, parent)
+            pipeline.generate()
+            for _ in range(3):
+                with self.assertRaises(ValueError): Pipeline(config, parent).answer()
+            self.assertEqual(sum(op == 'teacher_answer' for op, _ in parent.calls), 6)
+
     def test_targeted_quota_plan(self):
         with tempfile.TemporaryDirectory() as folder:
             config = load_config();config['paths']['output_dir'] = folder

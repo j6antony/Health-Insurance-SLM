@@ -103,30 +103,28 @@ def _run_loop(runtime, parent_config, config):
                 directory.mkdir(exist_ok=True)
                 print(f"Round {round_id}/{config['max_rounds']}", flush=True)
 
-                # 1. Generate new prompts, prioritizing tasks with low scores.
+                # 1. Build toward a cumulative VERIFIED-pair target, replacing failures.
                 weights = feedback_weights(data.base_weights, state['latest_report'], schemas,
                                            config['thresholds']['minimum_task_score'], config['feedback_strength'])
                 target = round_id * config['scenarios_per_round']
-                records = data.generate(target, weights)
-                if len(records) != target:
-                    raise ValueError('Generated scenario count does not match the round target')
-                new_records = records[(round_id - 1) * config['scenarios_per_round']:]
+                pairs = data.verified_pairs(target, weights)
+                previous = set(state.get('trained_scenario_ids',
+                    [record['id'] for record, _ in pairs[:(round_id - 1) * config['scenarios_per_round']]]))
+                new_pairs = [(record, answer) for record, answer in pairs if record['id'] not in previous]
+                new_records = [record for record, _ in new_pairs]
                 atomic_json(directory / 'generation_feedback.json', {'task_weights': weights})
 
-                # 2. Run and clean the student responses for diagnostics.
+                # 2. Student predictions remain diagnostics, never training labels.
                 save_predictions(runtime, new_records, schemas, directory)
-
-                # 3. Get validated parent answers. Only these become SFT labels.
-                pairs = data.answer_pairs()
-                new_ids = {record['id'] for record in new_records}
-                new_pairs = [(record, answer) for record, answer in pairs if record['id'] in new_ids]
-                minimum = max(1, (len(new_records) + 1) // 2)
+                minimum = max(1, (config['scenarios_per_round'] + 1) // 2)
                 atomic_json(directory / 'training_filter.json', {
-                    'generated': len(records), 'validated': len(pairs),
-                    'filtered': len(records) - len(pairs),
-                    'new_validated': len(new_pairs), 'minimum_new_required': minimum})
+                    'target_verified_pairs': target, 'validated': len(pairs),
+                    'target_reached': len(pairs) >= target,
+                    'new_validated': len(new_pairs), 'minimum_new_required': minimum,
+                    'training_scenario_ids': [record['id'] for record, _ in pairs]})
                 if len(new_pairs) < minimum:
-                    raise ValueError(f'Too few validated new training examples: {len(new_pairs)}/{len(new_records)}; require at least {minimum}')
+                    raise ValueError(f'Too few validated new training examples: {len(new_pairs)}; require at least {minimum}')
+                training_ids = [record['id'] for record, _ in pairs]
                 if not config['training']['replay_previous_rounds']:
                     pairs = new_pairs
 
@@ -137,7 +135,7 @@ def _run_loop(runtime, parent_config, config):
 
                 # Save only completed rounds. An interrupted round restarts from
                 # the previous completed adapter when this function is rerun.
-                state.update(completed_rounds=round_id, last_checkpoint=checkpoint, latest_report=report)
+                state.update(trained_scenario_ids=training_ids, completed_rounds=round_id, last_checkpoint=checkpoint, latest_report=report)
                 state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report})
                 if rank(report) > rank(state['best_report']):
                     state.update(best_report=report, best_checkpoint=checkpoint)

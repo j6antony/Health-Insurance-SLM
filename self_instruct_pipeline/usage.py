@@ -1,25 +1,29 @@
 """Durable per-attempt usage journal and Excel-readable CSV, without request content."""
 import csv
 import os
+import json
+import uuid
 from decimal import Decimal
 from pathlib import Path
 
-from .persistence import Store, now
+from .persistence import Store, now, atomic_json, atomic_jsonl
 
 # Standard global text rates, USD / million tokens; verified 2026-11-09.
 # Update this table when changing models or when provider prices change.
 PRICING_SOURCE = 'https://developers.openai.com/api/docs/models/gpt-6-luna'
 RATES = {('openai', 'gpt-6-luna'): ('0.10', '0.01', '0.50', '0.125')}
-FIELDS = ['timestamp', 'finished_at', 'provider', 'model', 'operation', 'attempt',
+FIELDS = ['event_id', 'run_id', 'timestamp', 'finished_at', 'provider', 'model', 'operation', 'attempt',
           'status', 'http_status', 'error_type', 'error_code', 'error_param', 'error_hint', 'response_status', 'response_id', 'duration_seconds',
           'input_tokens', 'cached_input_tokens', 'cache_write_tokens', 'output_tokens',
           'reasoning_tokens', 'total_tokens', 'estimated_cost_usd', 'cost_status',
           'input_usd_per_million', 'cached_input_usd_per_million',
           'output_usd_per_million', 'cache_write_usd_per_million', 'pricing_verified',
-          'pricing_source']
+          'pricing_source', 'cost_origin', 'cost_recorded_at']
 
 
 def usage_row(event):
+    if isinstance(event.get('cost_snapshot'), dict):
+        return {k: v for k, v in event['cost_snapshot'].items() if k in FIELDS}
     row = {key: event[key] for key in FIELDS if key in event}
     usage = event.get('usage', {})
     row['cost_status'] = 'usage_unavailable'
@@ -64,6 +68,30 @@ def usage_row(event):
 class UsageLogger:
     def __init__(self, directory):
         self.store = Store(directory)
+        root = self.store.directory.parent if self.store.directory.name in ('self_instruct', 'development_generation') else self.store.directory
+        identity = root / 'api_usage_run.json'
+        if not identity.exists():
+            atomic_json(identity, {'run_id': str(uuid.uuid4())})
+        self.run_id = json.loads(identity.read_text())['run_id']
+        self.source = str(self.store.directory.relative_to(root))
+        from .usage_cloud import SupabaseLedger
+        self.cloud = SupabaseLedger.from_environment()
+        if self.cloud:
+            self.cloud.check()  # Verify table access before the next paid API call.
+        # Freeze historical rows and assign stable IDs once, before any upload.
+        events = self.store.read('api_usage.jsonl')
+        changed = False
+        for event in events:
+            if not event.get('event_id'):
+                event.update(event_id=str(uuid.uuid4()), run_id=self.run_id, source=self.source)
+                changed = True
+            if 'cost_snapshot' not in event:
+                event['cost_origin'] = 'legacy_reconstructed'
+                event['cost_recorded_at'] = now()
+                event['cost_snapshot'] = usage_row(event)
+                changed = True
+        if changed:
+            atomic_jsonl(self.store.path('api_usage.jsonl'), events)
         # JSONL is authoritative: repair a CSV interrupted between the two writes.
         path = self.store.path('api_usage.csv')
         temporary = path.with_suffix('.csv.tmp')
@@ -73,14 +101,32 @@ class UsageLogger:
             for event in self.store.read('api_usage.jsonl'):
                 writer.writerow(usage_row(event))
         temporary.replace(path)
+        self.sync_pending()
+
+    def sync_pending(self):
+        if not self.cloud:
+            return 0
+        synced = {r['event_id'] for r in self.store.read('api_usage_synced.jsonl')
+                  if r.get('ledger_id') == self.cloud.ledger_id}
+        pending = [r for r in self.store.read('api_usage.jsonl') if r['event_id'] not in synced]
+        for offset in range(0, len(pending), 100):
+            batch = pending[offset:offset + 100]
+            self.cloud.upload(batch)
+            for row in batch:
+                self.store.append('api_usage_synced.jsonl', {'event_id': row['event_id'], 'ledger_id': self.cloud.ledger_id})
+        return len(pending)
 
     def __call__(self, event):
-        event = {'timestamp': now(), **event}
+        event = {'timestamp': now(), **event, 'event_id': str(uuid.uuid4()),
+                 'run_id': self.run_id, 'source': self.source,
+                 'cost_origin': 'recorded_at_call', 'cost_recorded_at': now()}
+        event['cost_snapshot'] = usage_row(event)
         self.store.append('api_usage.jsonl', event)
         with self.store.path('api_usage.csv').open('a', newline='', encoding='utf-8') as stream:
             csv.DictWriter(stream, fieldnames=FIELDS).writerow(usage_row(event))
             stream.flush()
             os.fsync(stream.fileno())
+        self.sync_pending()
 
 
 def export_usage(run_dir):

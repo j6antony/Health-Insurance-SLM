@@ -96,3 +96,25 @@ Official API references used: [Google Gemini API](https://ai.google.dev/api), [m
 OpenAI uses JSON object mode with a private `result` transport wrapper so array responses and arbitrary scenario context remain compatible with the existing contracts. The original JSON schema is included in the instructions and enforced locally before returning the unwrapped result. This does not claim native strict-schema constrained decoding; malformed outputs are rejected and follow the bounded retry policy. Reasoning effort defaults to medium, with temperature omitted while reasoning is enabled.
 
 When switching providers, use a new output directory. Existing Gemini logs remain historical evidence only, not a live OpenAI verification. OpenAI request formatting, usage logging, refusal/truncation handling, authentication, and retry behavior are covered by mocked tests. Official references: [Responses API](https://developers.openai.com/api/docs/guides/text), [JSON outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses), and [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna).
+
+## Verified-pair targets and partial exports
+
+`all` and `resume` now target validated instruction-answer pairs, not merely
+accepted scenarios. For example, `--target 120` means 120 pairs passing local
+checks and grounding audits. Good pairs are retained; failed samples receive
+bounded repairs and exhausted samples are replaced, with at most three replacement
+passes after the initial generation pass. Progress is saved in `pair_build_state.json`.
+The final `pair_build_report.json` distinguishes `target_reached` from `partial`.
+
+Normal `answer` mode permits partial results and exports passing pairs. `all` and
+`resume` also export passing pairs if sample/replacement limits are exhausted;
+this is not reported as target completion. Use `--strict-answers` to return a
+nonzero exit code for incomplete answers/targets after exporting usable pairs.
+API, authentication, budget, and corrupt-state errors still stop execution.
+Cumulative answer limits apply to both strict and partial modes; restarting does
+not grant a scenario an unlimited new set of attempts.
+
+Malformed audit JSON is retried separately (at most three attempts per candidate
+answer/prompt hash), keeping the locally valid teacher answer. A validly formatted
+negative grounding audit still rejects that answer. Audit attempts are persisted
+in `audit_attempts.jsonl` and remain covered by any active API budget.

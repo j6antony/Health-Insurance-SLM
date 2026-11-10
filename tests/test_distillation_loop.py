@@ -79,6 +79,9 @@ class FakeCurriculum:
         while len(self.rows)<target:self.rows.append(record(i=len(self.rows)))
         self.path.write_text(''.join(json.dumps(r)+'\n' for r in self.rows))
         return self.rows
+    def verified_pairs(self, target, weights):
+        self.generate(target, weights)
+        return self.answer_pairs()[:target]
     def answer_pairs(self):
         return [(r,{'document_type':'hospital_bill','evidence':['Synthetic hospital invoice'],'requires_review':False}) for r in self.rows]
 
@@ -233,7 +236,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result['completed_rounds'], 1)
         self.assertEqual(len(runtime.trains[0]), 1)
         summary = json.loads((Path(self.tmp.name)/'round_01/training_filter.json').read_text())
-        self.assertEqual(summary['filtered'], 1)
+        self.assertFalse(summary['target_reached'])
+        self.assertEqual(summary['validated'], 1)
 
     def test_empty_training_subset_never_reaches_trainer(self):
         with patch.object(FakeCurriculum, 'answer_pairs', lambda data: []):

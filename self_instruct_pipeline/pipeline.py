@@ -17,6 +17,10 @@ from .validation import (ValidationError, validate_answer, validate_audit, valid
                          validate_schema, validate_scenario, batch_schema, scenario_audit_schema, AUDIT_SCHEMA)
 
 
+class GenerationExhausted(ValueError):
+    """Bounded candidate generation stopped without meeting its scenario goal."""
+
+
 class Pipeline:
     def __init__(self, config, parent=None, exclusions=()):
         self.config = config
@@ -175,7 +179,7 @@ class Pipeline:
         failures = 0
         while len(self.accepted) < target:
             if batches >= limits[goal]['max_batches']:
-                raise ValueError('Scenario generation attempt limit reached; inspect failure_summary.json and rejected_records.jsonl')
+                raise GenerationExhausted('Scenario generation attempt limit reached; inspect failure_summary.json and rejected_records.jsonl')
             batches += 1
             quotas = None
             if task_targets is not None:
@@ -279,8 +283,29 @@ class Pipeline:
             print(f'Accepted scenarios: {len(self.accepted)}/{target}; batch accepted: {len(accepted_this_batch)}', flush=True)
             failures = 0 if accepted_this_batch else failures + 1
             if failures >= self.config['generation']['max_consecutive_failed_batches']:
-                raise ValueError('Stopped after consecutive failed batches; inspect rejected_records.jsonl')
+                raise GenerationExhausted('Stopped after consecutive failed batches; inspect rejected_records.jsonl')
         return len(self.accepted)
+
+    def audit_answer(self, row, answer):
+        """Retry malformed audit output without regenerating a locally valid answer."""
+        messages = verification_messages(row, answer, self.schemas)
+        key = digest({'scenario_hash': digest(row), 'answer': answer, 'messages': messages})
+        attempts = sum(r['candidate_hash'] == key for r in self.store.read('audit_attempts.jsonl'))
+        for attempt in range(attempts, 3):
+            self.store.append('audit_attempts.jsonl', {'scenario_id': row['id'],
+                'candidate_hash': key, 'attempt': attempt + 1, 'timestamp': now()})
+            try:
+                audit = self.client().generate_json(messages, AUDIT_SCHEMA, 'answer_audit', temperature=0.0)
+                validate_schema(audit, AUDIT_SCHEMA)
+                return audit  # Grounding pass/fail is checked by the caller.
+            except ParentError as exc:
+                if not exc.retryable or 'JSON' not in str(exc):
+                    raise
+                reason = str(exc)
+            except (ValidationError, KeyError, TypeError) as exc:
+                reason = str(exc)
+            self.reject('answer_audit_format', reason, {'scenario_id': row['id'], 'answer': answer})
+        raise ParentError('Audit JSON remained malformed after its cumulative attempt limit', True)
 
     def answer(self, allow_partial=False, scenario_ids=None, max_sample_attempts=3):
         if type(max_sample_attempts) is not int or max_sample_attempts < 1:
@@ -308,7 +333,8 @@ class Pipeline:
                 continue
             success = False
             used = max(attempt_counts[row['id']], previous_failures[row['id']])
-            attempts = max(0, max_sample_attempts - used) if allow_partial else self.config['generation']['max_answer_attempts_per_run']
+            remaining = max(0, max_sample_attempts - used)
+            attempts = remaining if allow_partial else min(remaining, self.config['generation']['max_answer_attempts_per_run'])
             for attempt in range(attempts):
                 answer, audit = None, None
                 try:
@@ -325,7 +351,7 @@ class Pipeline:
                     messages = teacher_messages(row, self.schemas, feedback_by_id.get(row['id']))
                     answer = client.generate_json(messages, self.schemas[row['task']], 'teacher_answer', temperature=0.0)
                     validate_answer(row, answer, self.schemas[row['task']])
-                    audit = client.generate_json(verification_messages(row, answer, self.schemas), AUDIT_SCHEMA, 'answer_audit', temperature=0.0)
+                    audit = self.audit_answer(row, answer)
                     validate_audit(audit)
                     record = {'scenario_id': row['id'], 'scenario_hash': digest(row), 'task': row['task'],
                               'answer': answer, 'audit': audit, 'answer_attempt': number, 'created_at': now(), 'parent': row['parent'],
@@ -338,9 +364,9 @@ class Pipeline:
                     success = True
                     break
                 except ParentError as exc:
-                    self.reject('answer_api', str(exc), {'scenario_id': row['id']})
+                    self.reject('answer_api', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
                     if 'JSON' in str(exc):
-                        feedback_by_id[row['id']] = {'validation_error': str(exc), 'proposed_answer': None, 'audit': None}
+                        feedback_by_id[row['id']] = {'validation_error': str(exc), 'proposed_answer': answer, 'audit': audit}
                     if not exc.retryable or (allow_partial and 'JSON' not in str(exc)):
                         raise
                 except (ValidationError, KeyError, TypeError) as exc:
@@ -355,6 +381,52 @@ class Pipeline:
         if not allow_partial and len(done) != len(self.accepted):
             raise ValueError('Some answers failed automatic checks; resume retries unanswered scenarios')
         return len(done)
+
+    def build_pairs(self, target=None, max_replacement_passes=3):
+        """Target verified pairs; return/export a useful partial result on sample exhaustion."""
+        target = target or self.config['generation']['target_accepted_scenarios']
+        if type(target) is not int or target < 1 or type(max_replacement_passes) is not int or max_replacement_passes < 0:
+            raise ValueError('Invalid verified-pair target or replacement limit')
+        path = self.store.path('pair_build_state.json')
+        goals = json.loads(path.read_text()) if path.exists() else {}
+        key = str(target)
+        progress = goals.setdefault(key, {'passes': 0})
+        try:
+            # Existing failures get only their remaining cumulative repair allowance.
+            stop_reason = 'replacement_limit'
+            if len(self.store.read('validated_answers.jsonl')) < target:
+                self.answer(allow_partial=True)
+            while len(self.store.read('validated_answers.jsonl')) < target:
+                if not progress.get('active_target'):
+                    if progress['passes'] >= max_replacement_passes + 1:
+                        break
+                    missing = target - len(self.store.read('validated_answers.jsonl'))
+                    progress['active_target'] = len(self.accepted) + missing
+                    progress['passes'] += 1
+                    atomic_json(path, goals)
+                self.config['generation']['target_accepted_scenarios'] = progress['active_target']
+                try:
+                    self.generate()
+                except GenerationExhausted:
+                    stop_reason = 'scenario_generation_limit'
+                    # Some candidates may have passed before generation stopped.
+                    self.answer(allow_partial=True)
+                    break
+                self.answer(allow_partial=True)
+                progress.pop('active_target', None)
+                atomic_json(path, goals)
+            count = len(self.store.read('validated_answers.jsonl'))
+            result = {'target_verified_pairs': target, 'validated_pairs': count,
+                      'accepted_scenarios': len(self.accepted), 'passes': progress['passes'],
+                      'status': 'target_reached' if count >= target else 'partial',
+                      'stop_reason': 'target_reached' if count >= target else stop_reason}
+            atomic_json(self.store.path('pair_build_report.json'), result)
+            print('Verified-pair build:', result, flush=True)
+            return result
+        finally:
+            # Keep usable data exportable even if an API/budget/validation limit stops work.
+            self.export()
+            self.checkpoint()
 
     def export(self):
         count = export_dataset(self.store, self.schemas)

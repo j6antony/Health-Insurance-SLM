@@ -255,3 +255,23 @@ restart the kernel, and retain the same configs, output directory, and budget fi
 Previously failed development candidates may now be repaired within their remaining
 three-attempt allowance without resetting the replacement counter. If both sample
 and replacement limits are exhausted, setup still stops and lists missing tasks.
+
+## Verified-pair target correction
+
+Each training round now requests a cumulative target of verified pairs through
+`Pipeline.build_pairs`, rather than stopping at the same number of accepted
+scenarios. Exhausted failed answers are replaced within three replacement passes;
+good existing pairs are retained. Each training run's `self_instruct/` directory
+contains `pair_build_state.json` and `pair_build_report.json` with the requested and
+actual pair counts and an explicit partial/completed status. The API budget is
+unchanged. If replacement limits leave a partial dataset, the existing minimum
+new-example requirement still applies before SFT. Training records the actual
+sample IDs used, so replay and later rounds do not count rejected candidates as
+trained examples. Student generations remain diagnostics and never labels.
+
+This addresses the follow-up review in the Handle Failed Samples chat: the normal
+CLI now exports good partial results and builds toward a verified-pair target,
+strict mode also obeys cumulative retry limits, and malformed audits retry without
+regenerating the locally valid answer. Earlier descriptions of scenario-count
+training targets or uncapped strict per-run answer retries are superseded by this
+behavior. The standalone `generate` command still targets scenarios only.
