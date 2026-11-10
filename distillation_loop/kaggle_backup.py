@@ -126,13 +126,26 @@ def save_adapter_dataset(checkpoint, run_dir, round_id):
                 # converted manifest.json; publish a corrected version, never delete.
                 result = cli('version', '-p', str(stage), '-m', f'Preserve adapter manifest for round {round_id}', '--keep-tabular', '--quiet')
             else:
-                status_text = (getattr(status, 'stdout', '') + ' ' + getattr(status, 'stderr', '')).lower()
-                if any(code in status_text for code in ('401', '403', '429')):
-                    raise AdapterBackupError('Cannot inspect Kaggle dataset: ' + cli_diagnostic(status) + '. Check dataset read/write permissions.')
+                diagnostic = cli_diagnostic(status)
+                if 'HTTP 403' in diagnostic:
+                    # Status access is not proof that this fresh immutable slug
+                    # exists. Verify the credential independently, then let the
+                    # private-create endpoint establish creation permission. Never
+                    # version/delete an inaccessible dataset or claim it is backed up.
+                    authentication = cli('list', '--mine', timeout=30)
+                    if authentication.returncode:
+                        raise AdapterBackupError(
+                            'Kaggle status returned HTTP 403 and authentication check failed ('
+                            + cli_diagnostic(authentication)
+                            + '). Check the token and account. Completed training remains local; rerun after fixing credentials.')
+                    print('Dataset status returned 403; authentication passed. Attempting private dataset creation.', flush=True)
+                elif 'HTTP 404' not in diagnostic:
+                    raise AdapterBackupError('Cannot inspect Kaggle dataset: ' + diagnostic
+                        + '. No upload attempted. Completed training remains local; retry after correcting access or service availability.')
                 result = cli('create', '-p', str(stage), '--keep-tabular', '--quiet')  # Private by default.
 
             if result.returncode:
-                raise AdapterBackupError('Kaggle adapter upload failed (' + cli_diagnostic(result) + '). Adapter is local. Inspect adapter_backups/round_XX.pending.json for the dataset URL; rerun after correcting upload access. No completed training will be repeated.')
+                raise AdapterBackupError('Kaggle adapter upload failed (' + cli_diagnostic(result) + '). Confirm KAGGLE_USERNAME owns the destination and the API credential permits dataset creation. Adapter is local. Inspect adapter_backups/round_XX.pending.json for the dataset URL; rerun after correcting upload access. No completed training will be repeated.')
         if not matched:
             # A successful create may still be processing. Confirm remote access
             # before marking this round safely backed up.
