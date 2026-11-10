@@ -69,6 +69,7 @@ def _run_loop(runtime, parent_config, config):
         evaluator = LightevalEvaluator(runtime, schemas, config['development_examples_per_task'])
 
         if state is None:
+            print('Development set complete. Saving initial student adapter (local; no teacher API calls).', flush=True)
             initial = runtime.save_checkpoint(store.path('initial_adapter'))
             state = {
                 'settings_hash': settings_hash, 'development_hash': digest(development),
@@ -79,6 +80,7 @@ def _run_loop(runtime, parent_config, config):
             atomic_json(state_path, state)
         if state['development_hash'] != digest(development):
             raise ValueError('Frozen development set has changed')
+        print('Restoring student adapter (local).', flush=True)
         runtime.restore(state['last_checkpoint'])
         if state['status'] != 'running':
             runtime.restore(state['best_checkpoint'])
@@ -86,6 +88,7 @@ def _run_loop(runtime, parent_config, config):
 
         # Evaluate once before training. A successful baseline needs no training.
         if state['latest_report'] is None:
+            print(f'Starting baseline evaluation on {len(development)} examples (local GPU; no teacher API calls).', flush=True)
             report = evaluator.evaluate(development, store.path('baseline'))
             validate_report(report, schemas, config['development_examples_per_task'])
             state.update(latest_report=report, best_report=report)

@@ -275,3 +275,20 @@ strict mode also obeys cumulative retry limits, and malformed audits retry witho
 regenerating the locally valid answer. Earlier descriptions of scenario-count
 training targets or uncapped strict per-run answer retries are superseded by this
 behavior. The standalone `generate` command still targets scenarios only.
+
+## Kaggle multi-GPU training crash
+
+A traceback through `torch.nn.parallel.data_parallel` followed by bitsandbytes
+`CUBLAS_STATUS_EXECUTION_FAILED` shows unintended DataParallel replication in this
+single-process, single-GPU notebook. The model is loaded in 4-bit on GPU 0; Trainer
+must not replicate it across Kaggle's other visible GPU. The first setup cell now
+sets `CUDA_VISIBLE_DEVICES=0` before torch imports. Student setup requires exactly
+one visible GPU, and SFT checks that Trainer uses one GPU and one process.
+
+After an illegal-memory-access error, restart the kernel before reloading the
+student; changing visibility after CUDA initializes does not repair the context.
+Keep the same run folder, generated data, adapters, and budget files when resuming.
+The saved development set and verified training pairs are reused. Cleanup now
+preserves the original training exception if emptying the damaged CUDA cache also
+fails. This fixes the observed replication configuration; full CUDA validation
+still requires rerunning on Kaggle.

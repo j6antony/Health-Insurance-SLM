@@ -1,10 +1,28 @@
 import gc
 import json
 import math
+import sys
 from pathlib import Path
 
 from self_instruct_pipeline.persistence import atomic_json
 from self_instruct_pipeline.prompt_builder import target_payload
+
+
+def require_single_gpu(torch):
+    if not torch.cuda.is_available():
+        raise ValueError('The configured 4-bit QLoRA loop requires a CUDA GPU')
+    if torch.cuda.device_count() != 1:
+        raise ValueError('This QLoRA loop requires exactly one visible GPU. Restart the kernel and set CUDA_VISIBLE_DEVICES=0 before importing torch or loading the model.')
+
+
+def clear_cuda_cache(torch):
+    # Preserve the original training traceback if the CUDA context is poisoned.
+    training_error = sys.exc_info()[0] is not None
+    try:
+        torch.cuda.empty_cache()
+    except RuntimeError:
+        if not training_error:
+            raise
 
 
 def render_prompt(tokenizer, payload):
@@ -41,8 +59,7 @@ class StudentRuntime:
         from peft import PeftModel, LoraConfig, get_peft_model, prepare_model_for_kbit_training
         if self.prepared:
             return
-        if not torch.cuda.is_available():
-            raise ValueError('The configured 4-bit QLoRA loop requires a CUDA GPU')
+        require_single_gpu(torch)
         if not isinstance(self.model, PeftModel):
             set_seed(self.config['random_seed'])
             self.model = prepare_model_for_kbit_training(self.model, use_gradient_checkpointing=True)
@@ -140,6 +157,8 @@ class StudentRuntime:
                 fp16=True, bf16=False, optim='adamw_torch', report_to='none',
                 save_strategy='no', eval_strategy='no', logging_steps=1,
                 seed=self.config['random_seed'], remove_unused_columns=False)
+            if args.n_gpu != 1 or args.world_size != 1:
+                raise ValueError('SFT must use one GPU in one process; restart with CUDA_VISIBLE_DEVICES=0')
             trainer = SFTTrainer(model=self.model, args=args, train_dataset=Dataset.from_list(examples),
                                  processing_class=self.tokenizer,
                                  data_collator=DataCollatorForLanguageModeling(
@@ -167,4 +186,4 @@ class StudentRuntime:
             if trainer is not None:
                 del trainer
             gc.collect()
-            torch.cuda.empty_cache()
+            clear_cuda_cache(torch)

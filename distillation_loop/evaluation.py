@@ -43,12 +43,15 @@ class LightevalEvaluator:
         from lighteval.tasks.requests import Doc
         metric = make_metric()
         rows = []
-        for item in development:
+        print(f'Evaluating {output_dir.name}: {len(development)} student generations.', flush=True)
+        for index, item in enumerate(development, 1):
             record, reference = item['record'], item['reference']
             payload = target_payload(record, self.schemas)
             # Reference choices and hidden labels are passed only to the metric,
             # never to model.generate or the student's input tokenizer.
+            print(f'Evaluation {index}/{len(development)}: {record["task"]} — generating locally', flush=True)
             prediction = self.runtime.infer(payload)
+            print(f'Evaluation {index}/{len(development)}: generation finished', flush=True)
             doc = Doc(query=json.dumps(payload, ensure_ascii=False),
                       choices=[json.dumps(reference, ensure_ascii=False)], gold_index=0,
                       specific={'record':record,'schemas':self.schemas,'truncated':prediction['truncated']})
