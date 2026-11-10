@@ -12,9 +12,10 @@ from .budget import ACTIVE_BUDGET
 
 
 class ParentError(RuntimeError):
-    def __init__(self, message, retryable=False):
+    def __init__(self, message, retryable=False, *, category=None):
         super().__init__(message)
         self.retryable = retryable
+        self.category = category or ('response' if 'JSON' in message else 'service')
 
 
 class JSONParent:
@@ -94,7 +95,7 @@ class JSONParent:
                 self._sleep(min(30, 2 ** attempt))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 log('malformed_transport')
-                raise ParentError(f'{self.NAME} returned malformed transport JSON', True) from None
+                raise ParentError(f'{self.NAME} returned malformed transport JSON', True, category='service') from None
             else:
                 # A disk/logging error must never retry an already billed API call.
                 log('ok', usage=result.get('usageMetadata', result.get('usage', {})),
@@ -130,7 +131,7 @@ class GeminiParent(JSONParent):
         result = self._request('/models/' + self.model + ':generateContent', body, operation)
         candidates = result.get('candidates', [])
         if len(candidates) != 1 or candidates[0].get('finishReason') != 'STOP':
-            raise ParentError('Gemini response blocked, incomplete, or truncated', True)
+            raise ParentError('Gemini response blocked, incomplete, or truncated', True, category='response')
         parts = candidates[0].get('content', {}).get('parts', [])
         text = ''.join(p.get('text', '') for p in parts if not p.get('thought'))
         try:
@@ -186,11 +187,11 @@ class OpenAIParent(JSONParent):
             body['temperature'] = self.settings['temperature'] if temperature is None else temperature
         result = self._request('/responses', body, operation)
         if result.get('status') != 'completed' or result.get('error') or result.get('incomplete_details'):
-            raise ParentError('OpenAI response failed, incomplete, or truncated', True)
+            raise ParentError('OpenAI response failed, incomplete, or truncated', True, category='response')
         parts = [part for item in result.get('output', []) if item.get('type') == 'message'
                  for part in item.get('content', [])]
         if any(part.get('type') == 'refusal' for part in parts):
-            raise ParentError('OpenAI refused this request')
+            raise ParentError('OpenAI refused this request', category='response')
         text = ''.join(part.get('text', '') for part in parts if part.get('type') == 'output_text')
         try:
             wrapped = json.loads(text)

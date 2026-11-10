@@ -1,5 +1,6 @@
 """Strict contract and evidence validation. Semantic checks are separate silver review."""
 import json
+import math
 import re
 from collections import Counter
 
@@ -23,6 +24,8 @@ def validate_schema(value, schema, path='$'):
                'integer': type(value) is int, 'number': type(value) in (int, float), None: True}
     if kind not in matches or not matches[kind]:
         fail(f'{path}: expected {kind}')
+    if kind in ('integer', 'number') and not math.isfinite(value):
+        fail(f'{path}: nonfinite number')
     if 'enum' in schema and value not in schema['enum']:
         fail(f'{path}: invalid enum')
     if kind == 'object':
@@ -81,7 +84,8 @@ def batch_schema(tasks, count):
 def check_hidden_fields(value):
     forbidden = {'answer', 'output', 'expected_answer', 'answer_key', 'hidden_answer', 'rationale',
                  'solution', 'reference_answer', 'expected_conclusion', 'completion',
-                 'expected_output', 'proposed_answer', 'case_type', 'skills', 'difficulty'}
+                 'expected_output', 'proposed_answer', 'case_type', 'skills', 'difficulty',
+                 'answer_checks', 'reference', 'rubric', 'accepted_references', 'review'}
     if isinstance(value, dict):
         if set(value) & forbidden:
             fail('Hidden answer or generation fields in target-facing context')
@@ -139,6 +143,10 @@ def validate_answer(record, answer, schema):
         check_rules(record, answer)
     except (ValueError, KeyError, IndexError, TypeError, ArithmeticError) as exc:
         fail(f'Answer correctness check: {exc}')
+    if answer.get('document_type') not in (None, 'unknown') and not answer.get('evidence'):
+        fail('A positive document classification requires source evidence')
+    if 'answer' in answer and answer.get('requires_review') is False and not answer.get('evidence'):
+        fail('A supported answer requires source evidence')
     pages = record['scenario']['documents']
     docs = {}
     for page in pages:

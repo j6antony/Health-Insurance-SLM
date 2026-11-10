@@ -1,45 +1,128 @@
-# Reviewed evaluation inputs
+# Reviewed evaluation and adjudication
 
-The default loop requires `validation.jsonl` and `test.jsonl`, each with at least
-30 independently reviewed examples for every task (540 per split for 18 tasks).
-These files are deliberately not populated with teacher-generated “gold”.
+The default run requires `validation.jsonl` and `test.jsonl`, each with at least
+30 independently reviewed examples for each of the 18 tasks (540 per split).
+Teacher-generated examples must not be relabeled as independently reviewed gold.
 
-Each JSONL line has `record`, `reference`, and
-`review: {"status": "approved", "reviewer": "reviewer-id", "source_group": "case-family-id"}`.
-Use the existing scenario and task answer schemas. Reviewers must verify the
-answer against applicable source rules; metadata is an attestation, not proof.
-Include realistic, appropriately deidentified cases with missing documentation,
-conflicts, AND/OR rules, date and numeric boundaries, and abstention. Keep all
-variants of one case/source family in one split. The loader rejects repeated IDs,
-near-duplicate cases, shared source groups, and identical source documents across
-splits. Training generation excludes both splits through the existing deduplicator.
-This is a useful overlap guard, not a guarantee against semantic leakage.
+Run the read-only readiness check before spending API credits or loading a model:
 
-Validation selects the best checkpoint. Test labels never influence feedback,
-checkpoint ranking, or early stopping. Only after selection, the initial adapter
-and selected adapter are evaluated on test; `final_comparison` records task deltas
-and regressions. Freeze the split before the experiment; do not repeatedly tune
-against the final report. Resume checks both split hashes.
+```sh
+python3 -m distillation_loop.preflight
+# Data/configuration only, on a machine without the training environment:
+python3 -m distillation_loop.preflight --skip-runtime
+```
 
-Free-text scoring now requires normalized reference agreement, including issue
-and missing-information lists. This conservative metric rejects paraphrases;
-it does not establish clinical correctness. Use expert error review before making
-performance claims. ROUGE is no longer a primary correctness metric.
+A benchmark JSONL line has `record`, `reference`, and:
 
-For an integration run only, set `evaluation.mode` to `synthetic_smoke` and
-`development_examples_per_task` to 3, using a new output directory. Smoke thresholds
-are engineering checks, never evidence of real-world model quality.
+```json
+{"review": {"status": "approved", "reviewer": "reviewer-id", "source_group": "case-family-id"}}
+```
 
-Optional independently authored `record.answer_checks` entries have `path` (list
-of answer keys/indices), `operation`, and `operands`. Operations: `equals` (one
-operand), `sum`, `subtract`, `all`, `any`, `date_offset` (ISO start date, calendar-day
-offset). Example: `{"path":["requires_review"],"operation":"any","operands":[false,true]}`.
-These checks remain outside target_payload and run on teacher and student answers.
-They must be authored from independently verified source facts. They do not parse
-natural language or infer policy applicability. Existing unannotated synthetic
-samples still rely on the teacher audit and remain silver. No independent reviewer
-or clinical ground truth is supplied automatically by this code.
+`record` contains `id`, `task`, `instruction`, and `scenario.documents`/`context`,
+using the existing task answer schemas for `reference`. Reasoning tasks also need
+a reviewed rubric, for example:
 
-Inspect each round's `training_coverage.json` before increasing volume or epochs.
-The default generation budget is unchanged: increase high-quality distinct data
-only after auditing coverage and baseline-versus-adapter errors.
+```json
+{"rubric": {"decision": "authorization_required", "required_facts": ["Authorization is required before submission."]}}
+```
+
+Review the decision, facts, exceptions, and abstention against applicable source
+rules. Reviewer metadata is an attestation, not proof. Optional
+`accepted_references` contains other **complete, independently approved answers**
+using the same schema. Do not add arbitrary model outputs to this allowlist.
+
+Keep case/source families in one split. Include appropriately deidentified,
+realistic records with missing documentation, contradictions, ambiguous policies,
+AND/OR rules, numeric/date boundaries, and abstention. The loader rejects repeated
+IDs, near duplicates, shared source groups, and identical normalized page text
+across validation/test, even if document IDs change. Local duplicate checks exclude
+both splits from new teacher scenarios and executable templates. Heuristic overlap
+checks cannot establish semantic independence or eliminate pretraining contamination.
+
+## Scoring and human adjudication
+
+Document classification checks the class **and** review flag. Extraction scores
+supported field/value/review tuples. Evidence must pass source validation.
+Matching codes do not automatically approve a contradictory prose explanation.
+
+For reviewed reasoning tasks, full substantive agreement with a reviewed answer
+or approved alternative can pass automatically; evidence spans and array order may
+differ when independently source-valid. Other wording is **ungraded pending review**,
+not automatically wrong or automatically correct. The evaluator writes
+`review_queue.jsonl`, freezes generations in `generation.json`, and raises
+`ReviewRequired`. No incomplete score report can select a checkpoint.
+
+A reviewer assesses each queued answer against its documents and rubric, then
+writes `adjudications.jsonl` in that evaluation directory, with one line per key:
+
+```json
+{"review_key":"key-from-queue","reviewer":"independent-reviewer-id","reason":"Explain the source-supported assessment.","decision_correct":true,"facts_correct":true,"abstention_correct":true,"unsupported_claims":false}
+```
+
+All four Boolean dimensions and a reviewer/reason are required. Duplicate or stale
+keys are rejected. A passing judgment requires correct decision, facts and
+abstention, with no unsupported claims. Resume the same loop: saved predictions
+and completed round training are reused. Keys bind the full benchmark/rubric,
+prediction and scoring version; cached generations also bind the checkpoint.
+`adjudications_hash` in the score report records the review inputs used. Grading
+basis counts distinguish reference agreement from human judgments; dimension
+rates are reported for adjudicated answers with an explicit denominator.
+
+This workflow supports semantic review without pretending that lexical similarity,
+a synonym list, or the teacher's self-approval establishes factual correctness.
+It requires actual independent reviewer work for unfamiliar reasoning answers.
+
+## Selection and release
+
+Validation alone controls feedback and checkpoint selection. By default a task
+may not regress relative to the initial adapter; tolerances can be explicitly
+configured in `quality.per_task_max_regression`. Final-test labels never influence
+feedback, ranking, or early stopping.
+
+After selection, the initial and selected adapters run on the frozen test set.
+Promotion requires configured quality thresholds, no regression beyond tolerance,
+and at least 0.01 macro improvement. `promotion` records the result;
+`release_checkpoint` points to the selected adapter only if it passes, otherwise to
+the initial adapter. The runtime restores the release checkpoint. Test results do
+not trigger another tuning round. These are observed-score gates, not statistical
+proof of generalization; inspect errors and sampling uncertainty before deployment.
+
+Use a new output directory after changing scoring, schemas, templates, or quality
+settings. Frozen split hashes and round input hashes are checked on resume.
+
+## Deterministic training coverage
+
+The default curriculum reserves 25% of its cumulative target for executable
+fictional-rule templates: ledger subtraction (including exact settlement, zero and credit balances),
+calendar-date counting (including leap and year boundaries), and Boolean
+AND/OR criteria. Python computes references independently of the teacher. Exact
+answer checks pin their computed conclusions, missing-information/review flags,
+and task-specific fields. These narrow synthetic skills are **not reviewed clinical
+or real-world benchmarks** and are not sent to the teacher for self-approval.
+
+The other 75% remains automatically checked teacher silver. A round must achieve
+its full new-example target and at least 25% deterministic check coverage by
+default. `training_coverage.json` reports achieved counts, shortfall, task mix,
+checks by task, template counts, and distinct template reasoning patterns.
+Changing amounts or dates does not establish a new reasoning skill. Tune the
+mixture only after examining task errors; these templates cover three tasks, not
+all 18 capabilities. Increasing epochs cannot replace missing diverse source data.
+
+Optional independently authored `record.answer_checks` have `path` (nonempty keys
+or nonnegative array indices), `operation`, and nonempty `operands`. Operations:
+`equals` (one exact typed operand), `sum`, `subtract`, `all`, `any`, `date_offset`
+(ISO start date and integer calendar-day offset). They stay outside target payloads.
+Rules must be authored from trusted source facts and explicit applicability rules;
+this DSL does not interpret natural-language policies or business-day calendars.
+Absent assertions mean no deterministic verification. All synthetic data remains
+silver even when arithmetic checks pass.
+
+## Smoke runs
+
+Use `smoke_configs` for a bounded GPU integration run. It explicitly selects
+`synthetic_smoke`, one round, and two training steps; synthetic results cannot
+promote a release adapter. The ordinary smoke evaluator still uses native
+Lighteval. `tests/test_quality_hardening.py` also exercises the real controller,
+Pipeline, reviewed evaluator, curriculum, checkpoint selection and resume on CPU,
+with only teacher/model boundaries replaced by fixtures. This test does not verify
+CUDA execution, actual weight learning, or actual model quality.

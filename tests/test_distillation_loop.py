@@ -143,6 +143,9 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.config=load_loop_config();self.config.update(output_dir=self.tmp.name,scenarios_per_round=2,max_rounds=3)
+        self.config['quality']['minimum_new_pair_fraction'] = .5
+        self.config['quality']['minimum_deterministic_check_rate'] = 0
+        self.config['quality']['deterministic_template_fraction'] = 0
         self.config['evaluation'] = {'mode': 'synthetic_smoke'}
         self.config['development_examples_per_task'] = 3
         self.base=load_config()

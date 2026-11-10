@@ -21,6 +21,7 @@ class NativeTrainingTests(unittest.TestCase):
                 'text':'Synthetic hospital invoice.'}],'context':{}}}
         reference={'document_type':'hospital_bill','evidence':['Synthetic hospital invoice.'],'requires_review':False}
         class Runtime:
+            def identity(self): return {'model': 'tiny-fixture'}
             def infer(self,payload):
                 if set(payload)!={'instruction','scenario','response_schema'}:raise AssertionError('Input leakage')
                 return {'raw':json.dumps(reference),'truncated':False}

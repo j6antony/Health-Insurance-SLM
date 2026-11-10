@@ -3,14 +3,14 @@ from collections import Counter
 from self_instruct_pipeline.config import resolve_path
 from self_instruct_pipeline.persistence import read_jsonl, digest
 from self_instruct_pipeline.deduplicator import Deduplicator
-from self_instruct_pipeline.validation import validate_answer
+from self_instruct_pipeline.validation import validate_answer, validate_schema, check_hidden_fields
 
 
 def load_benchmarks(config, schemas):
-    settings = config.get('evaluation', {'mode': 'synthetic_smoke'})
-    if settings['mode'] == 'synthetic_smoke':
+    settings = config.get('evaluation', {})
+    if settings.get('mode') == 'synthetic_smoke':
         return None, []
-    if settings['mode'] != 'reviewed':
+    if settings.get('mode') != 'reviewed':
         raise ValueError('evaluation.mode must be reviewed or synthetic_smoke')
     splits = []
     seen_ids, seen_sources = set(), set()
@@ -24,18 +24,44 @@ def load_benchmarks(config, schemas):
         counts = Counter()
         for item in rows:
             record = item['record']
+            validate_schema(record, {'type': 'object', 'required': ['id', 'task', 'instruction', 'scenario'], 'properties': {
+                'id': {'type': 'string', 'minLength': 1}, 'task': {'type': 'string'},
+                'instruction': {'type': 'string', 'minLength': 1},
+                'scenario': {'type': 'object', 'required': ['documents', 'context'], 'properties': {
+                    'context': {'type': 'object'},
+                    'documents': {'type': 'array', 'minItems': 1, 'items': {'type': 'object',
+                        'required': ['document_id', 'page_number', 'text'], 'properties': {
+                            'document_id': {'type': 'string', 'minLength': 1},
+                            'page_number': {'type': 'integer', 'minimum': 1},
+                            'text': {'type': 'string', 'minLength': 1}}}}}}}})
+            check_hidden_fields(record['scenario']['context'])
+            pages = [(d['document_id'], d['page_number']) for d in record['scenario']['documents']]
+            if len(pages) != len(set(pages)):
+                raise ValueError('Duplicate benchmark document/page pair')
             review = item.get('review', {})
-            if not review.get('reviewer') or not review.get('source_group') or review.get('status') != 'approved':
+            if any(not isinstance(review.get(k), str) or not review[k].strip() for k in ('reviewer', 'source_group')) or review.get('status') != 'approved':
                 raise ValueError('Benchmark needs approved independent review and source_group')
             if record['task'] not in schemas:
                 raise ValueError('Unknown benchmark task')
             validate_answer(record, item['reference'], schemas[record['task']])
+            alternatives = item.get('accepted_references', [])
+            if not isinstance(alternatives, list):
+                raise ValueError('accepted_references must be an independently reviewed answer array')
+            for alternative in alternatives:
+                validate_answer(record, alternative, schemas[record['task']])
+            if 'answer' in item['reference']:
+                rubric = item.get('rubric', {})
+                if (not isinstance(rubric, dict) or not isinstance(rubric.get('decision'), str)
+                        or not rubric['decision'].strip() or not isinstance(rubric.get('required_facts'), list)
+                        or not rubric['required_facts'] or any(not isinstance(x, str) or not x.strip() for x in rubric['required_facts'])):
+                    raise ValueError('Reasoning benchmark requires reviewed rubric.decision and required_facts')
             if record['id'] in seen_ids or dedup.check(record):
                 raise ValueError('Duplicate or overlapping benchmark scenario')
             seen_ids.add(record['id']); dedup.add(record)
             counts[record['task']] += 1
         groups = {item['review']['source_group'] for item in rows}
-        sources = {digest(item['record']['scenario']['documents']) for item in rows}
+        sources = {digest(' '.join(page['text'].casefold().split()))
+                   for item in rows for page in item['record']['scenario']['documents']}
         if (groups | sources) & seen_sources:
             raise ValueError('Validation and test source groups/documents overlap')
         seen_sources.update(groups | sources)

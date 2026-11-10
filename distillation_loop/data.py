@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 from collections import Counter
 from pathlib import Path
 
@@ -103,6 +104,7 @@ class CurriculumData:
         self.pipeline=Pipeline(config,parent=parent,exclusions=[x['record'] for x in development])
         self.base_weights=copy.deepcopy(self.pipeline.scheduler.weights)
         self.owns_lock=False
+        self.deterministic_fraction = 0.0
 
     def open(self):
         self.lock=self.pipeline.store.lock()
@@ -122,9 +124,15 @@ class CurriculumData:
         return p.accepted
 
     def verified_pairs(self, target, weights):
+        from .trusted_templates import template_pairs
+        count = math.ceil(target * self.deterministic_fraction)
+        templates = template_pairs(count, self.pipeline.schemas, self.pipeline.exclusions) if count else []
         self.pipeline.scheduler.weights = weights
-        self.pipeline.build_pairs(target)
-        return checked_pairs(self.pipeline)[:target]
+        silver_target = target - len(templates)
+        if silver_target:
+            self.pipeline.build_pairs(silver_target)
+        # Template IDs are stable; cumulative replay does not create extra unique data.
+        return (templates + checked_pairs(self.pipeline)[:silver_target])[:target]
 
     def answer_pairs(self):
         self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()

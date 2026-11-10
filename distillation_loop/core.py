@@ -1,11 +1,8 @@
 import json
 import math
 import re
-from collections import Counter
-from pathlib import Path
 
 from self_instruct_pipeline.config import resolve_path
-from self_instruct_pipeline.deduplicator import rouge_l
 from self_instruct_pipeline.validation import ValidationError, validate_answer
 
 
@@ -38,7 +35,9 @@ def clean_response(raw, truncated=False):
                     raise ResponseError('Duplicate JSON keys in student response')
                 result[key] = item
             return result
-        value = json.loads(text, object_pairs_hook=unique_keys)
+        def reject_constant(value):
+            raise ResponseError('Nonfinite JSON number')
+        value = json.loads(text, object_pairs_hook=unique_keys, parse_constant=reject_constant)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ResponseError('Student response is not a complete JSON object') from exc
     if not isinstance(value, dict):
@@ -61,20 +60,27 @@ def score_response(record, reference, raw, schemas, truncated=False):
     """Conservative task-aware reference metric with schema/evidence gates."""
     try:
         answer = clean_response(raw, truncated)
-        validate_answer(record, answer, schemas[record['task']])
+        visible_record = {k: v for k, v in record.items() if k != 'answer_checks'}
+        validate_answer(visible_record, answer, schemas[record['task']])
     except (ResponseError, ValidationError, KeyError, TypeError):
         return {'task_score': 0.0, 'schema_evidence_valid': 0.0}
-    if 'document_type' in reference:
+    try:
+        validate_answer(record, answer, schemas[record['task']])
+    except ValidationError:
+        return {'task_score': 0.0, 'schema_evidence_valid': 1.0}
+    if answer.get('requires_review') != reference.get('requires_review'):
+        score = 0.0
+    elif 'document_type' in reference:
         score = float(answer['document_type'] == reference['document_type'])
-    elif answer.get('requires_review') != reference.get('requires_review'):
-        score = 0.0
     elif 'fields' in reference:
-        key = lambda field: (field['field_name'], normalize(field['value']), field['requires_review'])
+        key = lambda field: (field['field_name'],
+                             (' '.join(field['value'].split()) if field['field_name'] in ('policy_number', 'currency') else normalize(field['value'])),
+                             field['requires_review'])
         score = set_f1(map(key, answer['fields']), map(key, reference['fields']))
-    elif answer.get('requires_review') != reference.get('requires_review'):
-        score = 0.0
     elif 'suggested_codes' in reference:
-        score = set_f1(answer['suggested_codes'], reference['suggested_codes'])
+        prose_equal = normalize(answer['answer']) == normalize(reference['answer'])
+        missing_equal = {normalize(x) for x in answer.get('missing_information', [])} == {normalize(x) for x in reference.get('missing_information', [])}
+        score = float(set(answer['suggested_codes']) == set(reference['suggested_codes'])) if prose_equal and missing_equal else 0.0
     else:
         text = lambda value: '\n'.join([value['answer'], value.get('draft', ''),
                                        '\n'.join(value.get('criteria_assessment', []))])
@@ -138,7 +144,7 @@ def load_loop_config(path='config/distillation_loop.json'):
             raise ValueError('Thresholds must be finite in (0, 1]')
     if type(value['feedback_strength']) not in (int, float) or not math.isfinite(value['feedback_strength']) or value['feedback_strength'] < 0:
         raise ValueError('feedback_strength must be nonnegative and finite')
-    evaluation = value.get('evaluation', {'mode': 'synthetic_smoke'})
+    evaluation = value.get('evaluation', {})
     if evaluation.get('mode') not in ('reviewed', 'synthetic_smoke'):
         raise ValueError('Invalid evaluation mode')
     if evaluation['mode'] == 'reviewed':
@@ -148,6 +154,8 @@ def load_loop_config(path='config/distillation_loop.json'):
         for split in ('validation', 'test'):
             if not isinstance(evaluation.get(f'{split}_path'), str) or not evaluation[f'{split}_path']:
                 raise ValueError('Reviewed evaluation requires benchmark paths')
+    from .quality import validate_quality_settings
+    validate_quality_settings(value)
     t = value['training']
     for key in ('max_sequence_length','epochs_per_round','max_steps_per_round','gradient_accumulation_steps','lora_rank','lora_alpha'):
         if type(t[key]) is not int or t[key] < 1:

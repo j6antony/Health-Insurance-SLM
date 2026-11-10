@@ -1,12 +1,11 @@
-> Evaluation update (November 10, 2026): the default configuration now requires
-> independently reviewed validation and test JSONL files, with 30 examples per
-> task in each split. See [the benchmark contract](data/evaluation/README.md).
-> Earlier descriptions below of automatic three-example development generation
-> apply only to explicit `evaluation.mode = "synthetic_smoke"` integration runs.
-> Free-text scoring uses strict normalized reference agreement rather than ROUGE.
-> Final test comparison runs only after checkpoint selection and never feeds
-> training feedback. Existing output directories require a new run directory
-> because evaluation settings and scoring have changed.
+> Evaluation update (November 10, 2026): default runs require independently
+> reviewed validation/test data, reviewed reasoning rubrics and adjudication for
+> unfamiliar answers. Regression, improvement and data-coverage gates protect model
+> promotion. See [the current benchmark and release contract](data/evaluation/README.md).
+> Earlier automatic three-example evaluation instructions below apply only to
+> explicit synthetic smoke runs. Use a new output directory for the new scoring
+> and curriculum contracts.
+
 
 # Notebook training and evaluation loop
 

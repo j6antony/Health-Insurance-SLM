@@ -8,6 +8,7 @@ from .coverage_tracker import coverage_state
 from .dataset_builder import export_dataset
 from .deduplicator import Deduplicator
 from .parent_backend import create_parent, ParentError
+from .budget import BudgetExceeded
 from .persistence import Store, atomic_json, digest, now, read_jsonl
 from .prompt_builder import (generation_messages, load_system_prompt, teacher_messages,
                              verification_messages, scenario_audit_messages)
@@ -175,7 +176,9 @@ class Pipeline:
             batch = self.config['generation']['batch_size']
             limits[goal] = {'max_batches': max(6, 3 * ((needed + batch - 1) // batch))}
             atomic_json(limit_path, limits)
-        batches = sum(r.get('generation_goal') == goal for r in self.store.read('generation_batches.jsonl'))
+        service_batches = {r['batch_id'] for r in self.store.unique_records('generation_transport_failures.jsonl', 'batch_id')}
+        batches = sum(r.get('generation_goal') == goal and r['batch_id'] not in service_batches
+                      for r in self.store.read('generation_batches.jsonl'))
         failures = 0
         while len(self.accepted) < target:
             if batches >= limits[goal]['max_batches']:
@@ -272,8 +275,12 @@ class Pipeline:
                         self.dedup.add(record)
                         accepted_this_batch.append(record)
                     break
-                except ParentError as exc:
+                except (ParentError, BudgetExceeded) as exc:
                     self.reject('scenario_api', str(exc), batch_id=batch_id)
+                    if getattr(exc, 'category', 'service') == 'service':
+                        self.store.append('generation_transport_failures.jsonl', {'batch_id': batch_id, 'generation_goal': goal})
+                        self.checkpoint()
+                        raise
                     if not exc.retryable:
                         self.checkpoint()
                         raise
@@ -291,15 +298,20 @@ class Pipeline:
         messages = verification_messages(row, answer, self.schemas)
         key = digest({'scenario_hash': digest(row), 'answer': answer, 'messages': messages})
         attempts = sum(r['candidate_hash'] == key for r in self.store.read('audit_attempts.jsonl'))
+        attempts -= sum(r['candidate_hash'] == key for r in self.store.unique_records('audit_transport_failures.jsonl', 'attempt_id'))
         for attempt in range(attempts, 3):
-            self.store.append('audit_attempts.jsonl', {'scenario_id': row['id'],
+            attempt_id = str(uuid.uuid4())
+            self.store.append('audit_attempts.jsonl', {'scenario_id': row['id'], 'attempt_id': attempt_id,
                 'candidate_hash': key, 'attempt': attempt + 1, 'timestamp': now()})
             try:
                 audit = self.client().generate_json(messages, AUDIT_SCHEMA, 'answer_audit', temperature=0.0)
                 validate_schema(audit, AUDIT_SCHEMA)
                 return audit  # Grounding pass/fail is checked by the caller.
-            except ParentError as exc:
-                if not exc.retryable or 'JSON' not in str(exc):
+            except (ParentError, BudgetExceeded) as exc:
+                if getattr(exc, 'category', 'service') == 'service':
+                    self.store.append('audit_transport_failures.jsonl', {'candidate_hash': key, 'attempt_id': attempt_id})
+                    raise
+                if not exc.retryable:
                     raise
                 reason = str(exc)
             except (ValidationError, KeyError, TypeError) as exc:
@@ -319,11 +331,17 @@ class Pipeline:
         feedback_by_id = {}
         previous_failures = Counter()
         attempt_counts = Counter(r['scenario_id'] for r in self.store.read('answer_attempts.jsonl'))
+        # Exhausted backend retries are service failures, not bad-answer repairs.
+        transport_failures = self.store.unique_records('answer_transport_failures.jsonl', 'attempt_id')
+        attempt_counts.subtract(Counter(r['scenario_id'] for r in transport_failures))
         for rejected in self.store.read('rejected_records.jsonl'):
             proposal = rejected.get('record', {})
-            if rejected.get('phase') in ('answer_validation', 'answer_api') and isinstance(proposal, dict):
+            if not isinstance(proposal, dict):
+                continue
+            category = proposal.get('api_category', 'response' if 'JSON' in rejected['reason'] else 'service')
+            quality_failure = rejected.get('phase') == 'answer_validation' or (rejected.get('phase') == 'answer_api' and category == 'response')
+            if quality_failure:
                 previous_failures[proposal.get('scenario_id')] += 1
-            if (rejected.get('phase') == 'answer_validation' or (rejected.get('phase') == 'answer_api' and 'JSON' in rejected['reason'])) and isinstance(proposal, dict):
                 feedback_by_id[proposal.get('scenario_id')] = {
                     'validation_error': rejected['reason'], 'proposed_answer': proposal.get('answer'),
                     'audit': proposal.get('audit')}
@@ -338,16 +356,17 @@ class Pipeline:
             for attempt in range(attempts):
                 answer, audit = None, None
                 try:
-                    client = self.client()
                     number = used + attempt + 1
+                    attempt_id = str(uuid.uuid4())
                     self.store.append('answer_attempts.jsonl', {'scenario_id': row['id'],
-                        'attempt': number, 'timestamp': now()})
+                        'attempt_id': attempt_id, 'attempt': number, 'timestamp': now()})
                     # Seed historical failures into the persistent count on first resume.
                     if attempt_counts[row['id']] < used:
                         for _ in range(used - attempt_counts[row['id']]):
                             self.store.append('answer_attempts.jsonl', {'scenario_id': row['id'], 'historical': True})
                         attempt_counts[row['id']] = used
                     print(f'Answering {row["task"]}: attempt {number}/{max_sample_attempts if allow_partial else number + attempts - attempt - 1}', flush=True)
+                    client = self.client()
                     messages = teacher_messages(row, self.schemas, feedback_by_id.get(row['id']))
                     answer = client.generate_json(messages, self.schemas[row['task']], 'teacher_answer', temperature=0.0)
                     validate_answer(row, answer, self.schemas[row['task']])
@@ -363,12 +382,19 @@ class Pipeline:
                     done.add(row['id'])
                     success = True
                     break
-                except ParentError as exc:
-                    self.reject('answer_api', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
-                    if 'JSON' in str(exc):
+                except (ParentError, BudgetExceeded) as exc:
+                    category = getattr(exc, 'category', 'service')
+                    if category == 'service':
+                        self.store.append('answer_transport_failures.jsonl', {'scenario_id': row['id'],
+                            'attempt_id': attempt_id, 'reason': str(exc), 'timestamp': now()})
+                        self.checkpoint()
+                    self.reject('answer_api', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit, 'api_category': category})
+                    if category == 'response':
                         feedback_by_id[row['id']] = {'validation_error': str(exc), 'proposed_answer': answer, 'audit': audit}
-                    if not exc.retryable or (allow_partial and 'JSON' not in str(exc)):
+                    if category == 'service':
                         raise
+                    if not exc.retryable:
+                        break
                 except (ValidationError, KeyError, TypeError) as exc:
                     self.reject('answer_validation', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
                     feedback_by_id[row['id']] = {'validation_error': str(exc),

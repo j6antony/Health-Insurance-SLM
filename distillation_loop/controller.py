@@ -1,5 +1,6 @@
 """One bounded loop: generate, infer, get teacher targets, train, evaluate."""
 import json
+import math
 
 from self_instruct_pipeline.config import resolve_path
 from self_instruct_pipeline.persistence import Store, atomic_json, digest
@@ -9,6 +10,9 @@ from .core import ResponseError, clean_response, feedback_weights, satisfactory,
 from .data import CurriculumData, frozen_development
 from .evaluation import LightevalEvaluator
 from .benchmarks import load_benchmarks, comparison
+from .review import SCORING_VERSION
+from .trusted_templates import TEMPLATE_VERSION
+from .quality import validate_quality_settings, regression_gate, promotion_gate, training_coverage
 from .student import infer_payloads
 from .kaggle_backup import check_backup_setup, save_adapter_dataset
 
@@ -60,8 +64,9 @@ def _run_loop(runtime, parent_config, config):
     check_backup_setup()
     schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
     settings_hash = digest({'config': config, 'parent': parent_config,
-                            'schemas': schemas, 'student': runtime.identity()})
+                            'schemas': schemas, 'student': runtime.identity(), 'scoring': SCORING_VERSION, 'trusted_templates': TEMPLATE_VERSION})
     state_path = store.path('loop_state.json')
+    quality = validate_quality_settings(config, schemas)
 
     def passed(report):
         return satisfactory(report, config['thresholds'], schemas)
@@ -71,11 +76,13 @@ def _run_loop(runtime, parent_config, config):
 
     with store.lock():
         reviewed, final_test = load_benchmarks(config, schemas)
-        runtime.prepare()
         state = json.loads(state_path.read_text()) if state_path.exists() else None
         if state and state.get('settings_hash') != settings_hash:
             raise ValueError('Settings changed; use a new output directory')
         development = reviewed if reviewed is not None else frozen_development(parent_config, config, store.directory)
+        if state and (state['development_hash'] != digest(development) or state.get('test_hash') != digest(final_test)):
+            raise ValueError('Frozen evaluation data have changed')
+        runtime.prepare()
         evaluator = LightevalEvaluator(runtime, schemas, config['development_examples_per_task'])
 
         if state is None:
@@ -85,7 +92,7 @@ def _run_loop(runtime, parent_config, config):
                 'settings_hash': settings_hash, 'development_hash': digest(development),
                 'test_hash': digest(final_test),
                 'completed_rounds': 0, 'history': [], 'status': 'running',
-                'last_checkpoint': initial, 'best_checkpoint': initial,
+                'initial_checkpoint': initial, 'last_checkpoint': initial, 'best_checkpoint': initial,
                 'best_report': None, 'latest_report': None,
             }
             atomic_json(state_path, state)
@@ -97,15 +104,22 @@ def _run_loop(runtime, parent_config, config):
         def finalize():
             if final_test and 'final_comparison' not in state:
                 test_evaluator = LightevalEvaluator(runtime, schemas, config['evaluation']['minimum_test_examples_per_task'])
-                runtime.restore(str(store.path('initial_adapter')))
+                runtime.restore(state['initial_checkpoint'])
+                test_evaluator.checkpoint_identity = state['initial_checkpoint']
                 baseline = test_evaluator.evaluate(final_test, store.path('final_test_baseline'))
                 runtime.restore(state['best_checkpoint'])
+                test_evaluator.checkpoint_identity = state['best_checkpoint']
                 selected = test_evaluator.evaluate(final_test, store.path('final_test_selected'))
                 for report in (baseline, selected):
                     validate_report(report, schemas, config['evaluation']['minimum_test_examples_per_task'])
                 state['final_comparison'] = comparison(baseline, selected)
+                state['promotion'] = promotion_gate(baseline, selected, quality, config['thresholds'], schemas)
+                state['release_checkpoint'] = state['best_checkpoint'] if state['promotion']['accepted'] else state['initial_checkpoint']
                 atomic_json(state_path, state)
-            runtime.restore(state['best_checkpoint'])
+            if not final_test:
+                state['promotion'] = {'accepted': False, 'reason': 'synthetic smoke evaluation only'}
+                atomic_json(state_path, state)
+            runtime.restore(state.get('release_checkpoint', state['best_checkpoint']))
             return state
 
         print('Restoring student adapter (local).', flush=True)
@@ -116,9 +130,10 @@ def _run_loop(runtime, parent_config, config):
         # Evaluate once before training. A successful baseline needs no training.
         if state['latest_report'] is None:
             print(f'Starting baseline evaluation on {len(development)} examples (local GPU; no teacher API calls).', flush=True)
+            evaluator.checkpoint_identity = state['initial_checkpoint']
             report = evaluator.evaluate(development, store.path('baseline'))
             validate_report(report, schemas, config['development_examples_per_task'])
-            state.update(latest_report=report, best_report=report)
+            state.update(latest_report=report, best_report=report, baseline_report=report)
             if passed(report):
                 state['status'] = 'thresholds_met'
             atomic_json(state_path, state)
@@ -126,6 +141,7 @@ def _run_loop(runtime, parent_config, config):
                 return finalize()
 
         data = CurriculumData(parent_config, development + final_test, store.directory)
+        data.deterministic_fraction = quality.get('deterministic_template_fraction', 0.0)
         try:
             data.open()
             for round_id in range(state['completed_rounds'] + 1, config['max_rounds'] + 1):
@@ -137,23 +153,31 @@ def _run_loop(runtime, parent_config, config):
                 weights = feedback_weights(data.base_weights, state['latest_report'], schemas,
                                            config['thresholds']['minimum_task_score'], config['feedback_strength'])
                 target = round_id * config['scenarios_per_round']
-                pairs = data.verified_pairs(target, weights)
+                frozen_pairs = directory / 'training_plan.json'
+                if frozen_pairs.exists():
+                    plan = json.loads(frozen_pairs.read_text())
+                    if plan['hash'] != digest(plan['pairs']):
+                        raise ValueError('Frozen round training pairs have changed')
+                    pairs = [(x['record'], x['answer']) for x in plan['pairs']]
+                else:
+                    pairs = data.verified_pairs(target, weights)
+                if len({r['id'] for r, _ in pairs}) != len(pairs):
+                    raise ValueError('Duplicate training scenario IDs')
+                for record, answer in pairs:
+                    validate_answer(record, answer, schemas[record['task']])
                 previous = set(state.get('trained_scenario_ids',
                     [record['id'] for record, _ in pairs[:(round_id - 1) * config['scenarios_per_round']]]))
                 new_pairs = [(record, answer) for record, answer in pairs if record['id'] not in previous]
                 new_records = [record for record, _ in new_pairs]
                 atomic_json(directory / 'generation_feedback.json', {'task_weights': weights})
-                from collections import Counter
-                atomic_json(directory / 'training_coverage.json', {
-                    'tasks': dict(Counter(r['task'] for r, _ in pairs)),
-                    'case_types': dict(Counter(r.get('case_type', 'unlabeled') for r, _ in pairs)),
-                    'difficulty': dict(Counter(r.get('difficulty', 'unlabeled') for r, _ in pairs)),
-                    'distinct_scenarios': len({r['id'] for r, _ in pairs}),
-                    'reference_status': 'automatically checked silver; teacher approval is not independent truth'})
+                minimum = max(1, math.ceil(config['scenarios_per_round'] * quality.get('minimum_new_pair_fraction', .5)))
+                coverage = training_coverage(pairs, target, len(new_pairs), minimum)
+                atomic_json(directory / 'training_coverage.json', coverage)
+                print(f"Training data: {len(pairs)}/{target} pairs; {len(new_pairs)} new; "
+                      f"shortfall={coverage['shortfall']}; deterministic checks={coverage['deterministic_check_rate']:.1%}", flush=True)
+                if coverage['deterministic_check_rate'] < quality.get('minimum_deterministic_check_rate', 0):
+                    raise ValueError('Insufficient deterministic answer-check coverage')
 
-                # 2. Student predictions remain diagnostics, never training labels.
-                save_predictions(runtime, new_records, schemas, directory)
-                minimum = max(1, (config['scenarios_per_round'] + 1) // 2)
                 atomic_json(directory / 'training_filter.json', {
                     'target_verified_pairs': target, 'validated': len(pairs),
                     'target_reached': len(pairs) >= target,
@@ -161,6 +185,10 @@ def _run_loop(runtime, parent_config, config):
                     'training_scenario_ids': [record['id'] for record, _ in pairs]})
                 if len(new_pairs) < minimum:
                     raise ValueError(f'Too few validated new training examples: {len(new_pairs)}; require at least {minimum}')
+                if not frozen_pairs.exists():
+                    rows = [{'record': r, 'answer': a} for r, a in pairs]
+                    atomic_json(frozen_pairs, {'pairs': rows, 'hash': digest(rows)})
+                save_predictions(runtime, new_records, schemas, directory)
                 training_ids = [record['id'] for record, _ in pairs]
                 if not config['training']['replay_previous_rounds']:
                     pairs = new_pairs
@@ -180,16 +208,18 @@ def _run_loop(runtime, parent_config, config):
                     checkpoint = runtime.train(pairs, schemas, directory / 'sft')
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
                 save_adapter_dataset(checkpoint, store.directory, round_id)
+                evaluator.checkpoint_identity = checkpoint
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
 
                 # Save only completed rounds. An interrupted round restarts from
                 # the previous completed adapter when this function is rerun.
                 state.update(trained_scenario_ids=training_ids, completed_rounds=round_id, last_checkpoint=checkpoint, latest_report=report)
-                state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report})
-                if rank(report) > rank(state['best_report']):
+                validation_safety = regression_gate(state['baseline_report'], report, quality)
+                state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report, 'regression_gate': validation_safety, 'coverage': coverage})
+                if validation_safety['accepted'] and rank(report) > rank(state['best_report']):
                     state.update(best_report=report, best_checkpoint=checkpoint)
-                if passed(report):
+                if passed(report) and validation_safety['accepted']:
                     state['status'] = 'thresholds_met'
                 elif round_id == config['max_rounds']:
                     state['status'] = 'max_rounds_reached'

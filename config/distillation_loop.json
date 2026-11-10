@@ -30,5 +30,13 @@
     "validation_path": "data/evaluation/validation.jsonl",
     "test_path": "data/evaluation/test.jsonl",
     "minimum_test_examples_per_task": 30
+  },
+  "quality": {
+    "max_task_regression": 0.0,
+    "per_task_max_regression": {},
+    "minimum_macro_improvement": 0.01,
+    "minimum_new_pair_fraction": 1.0,
+    "minimum_deterministic_check_rate": 0.25,
+    "deterministic_template_fraction": 0.25
   }
 }
