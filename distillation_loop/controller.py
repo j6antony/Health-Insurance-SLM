@@ -10,7 +10,7 @@ from self_instruct_pipeline.validation import ValidationError, validate_answer
 from .core import ResponseError, clean_response, feedback_weights, satisfactory, validate_report
 from .data import CurriculumData, frozen_development
 from .evaluation import LightevalEvaluator
-from .benchmarks import load_benchmarks, comparison
+from .benchmarks import load_benchmarks, load_fixed_validation, comparison
 from .review import SCORING_VERSION
 from .trusted_templates import TEMPLATE_VERSION
 from .quality import validate_quality_settings, regression_gate, promotion_gate, training_coverage
@@ -143,7 +143,14 @@ def _run_loop(runtime, parent_config, config):
             if passed(report):
                 return finalize()
 
-        data = CurriculumData(parent_config, development + final_test, store.directory)
+        exclusions = development + final_test
+        if config['evaluation']['mode'] == 'fixed':
+            import copy
+            full_config = copy.deepcopy(config)
+            full_config['evaluation'].pop('total_examples', None)
+            full_config['development_examples_per_task'] = 30
+            exclusions = load_fixed_validation(full_config, schemas) + final_test
+        data = CurriculumData(parent_config, exclusions, store.directory)
         data.deterministic_fraction = quality.get('deterministic_template_fraction', 0.0)
         try:
             data.open()
@@ -210,7 +217,10 @@ def _run_loop(runtime, parent_config, config):
                 else:
                     checkpoint = runtime.train(pairs, schemas, directory / 'sft')
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
-                if os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1':
+                if os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1':
+                    from .drive_backup import save_drive_adapter
+                    save_drive_adapter(checkpoint, store.directory, round_id)
+                elif os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1':
                     from .github_backup import upload_latest_adapter
                     upload_latest_adapter(store.directory)
                 else:

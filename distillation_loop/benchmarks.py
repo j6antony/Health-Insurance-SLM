@@ -111,10 +111,42 @@ def load_fixed_validation(config, schemas):
             raise ValueError('Bundled synthetic evaluation is not independently reviewed gold')
         check_hidden_fields(record['scenario']['context'])
         validate_answer(record, item['reference'], schemas[record['task']])
-    # Smoke runs use a deterministic per-task subset; verify the complete file first.
+    # The complete file is verified above even when evaluating a smaller subset.
+    if 'total_examples' in settings:
+        return fixed_subset(rows, schemas, settings['total_examples'], minimum,
+                            settings.get('subset_seed', config['random_seed']))
     selected = []; used = Counter()
     for item in rows:
         task = item['record']['task']
         if used[task] < minimum:
             selected.append(item); used[task] += 1
+    return selected
+
+
+def fixed_subset(rows, tasks, total, minimum, seed):
+    """Stable balanced task quotas with distinct reasoning families first."""
+    import random
+    if type(total) is not int or total < minimum * len(tasks) or total > len(rows):
+        raise ValueError('Fixed subset total must fit the corpus and minimum task coverage')
+    if type(seed) is not int or seed < 0:
+        raise ValueError('Fixed subset seed must be a nonnegative integer')
+    rng = random.Random(seed)
+    task_order = sorted(tasks); rng.shuffle(task_order)
+    quotas = {task: total // len(task_order) + int(i < total % len(task_order))
+              for i, task in enumerate(task_order)}
+    selected = []
+    for task in sorted(tasks):
+        families = {}
+        for item in rows:
+            if item['record']['task'] == task:
+                families.setdefault(item['verification']['family'], []).append(item)
+        family_order = sorted(families); rng.shuffle(family_order)
+        for items in families.values(): rng.shuffle(items)
+        ordered = []
+        while any(families.values()):
+            for family in family_order:
+                if families[family]: ordered.append(families[family].pop())
+        if len(ordered) < quotas[task]:
+            raise ValueError('Requested fixed subset exceeds a task supply')
+        selected.extend(ordered[:quotas[task]])
     return selected

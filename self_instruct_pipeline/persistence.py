@@ -64,7 +64,16 @@ class Store:
 
     @contextlib.contextmanager
     def lock(self):
-        with self.path('.pipeline.lock').open('a') as lock:
+        # Mounted Google Drive may not support flock; Colab keeps process locks
+        # on its local filesystem while all run data stays on the mounted Drive.
+        lock_root = os.environ.get('DISTILLATION_LOCAL_LOCK_DIR')
+        if lock_root:
+            directory = Path(lock_root); directory.mkdir(parents=True, exist_ok=True)
+            key = hashlib.sha256(str(self.directory.resolve()).encode()).hexdigest()
+            lock_path = directory / (key + '.lock')
+        else:
+            lock_path = self.path('.pipeline.lock')
+        with lock_path.open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:

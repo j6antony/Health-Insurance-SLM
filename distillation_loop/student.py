@@ -126,10 +126,12 @@ class StudentRuntime:
     def infer(self, payload):
         return self.infer_many([payload])[0]
 
-    def infer_many(self, payloads, batch_size=2):
+    def infer_many(self, payloads, batch_size=None):
         """Length-bucketed left-padded decoding, with per-example EOS accounting."""
         import torch
         self.prepare()
+        if batch_size is None:
+            batch_size = self.config['inference'].get('batch_size', 2)
         if type(batch_size) is not int or batch_size < 1:
             raise ValueError('batch_size must be a positive integer')
         results = [None] * len(payloads)

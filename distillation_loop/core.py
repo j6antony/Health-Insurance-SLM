@@ -151,6 +151,12 @@ def load_loop_config(path='config/distillation_loop.json'):
         for key in ('validation_path', 'manifest_path'):
             if not isinstance(evaluation.get(key), str) or not evaluation[key]:
                 raise ValueError('Fixed evaluation requires validation and manifest paths')
+    if 'total_examples' in evaluation:
+        if evaluation['mode'] != 'fixed' or type(evaluation['total_examples']) is not int or evaluation['total_examples'] < 1:
+            raise ValueError('total_examples requires fixed mode and a positive integer')
+        subset_seed = evaluation.get('subset_seed', value['random_seed'])
+        if type(subset_seed) is not int or subset_seed < 0:
+            raise ValueError('subset_seed must be a nonnegative integer')
     if evaluation['mode'] == 'reviewed':
         minimum = evaluation.get('minimum_test_examples_per_task')
         if type(minimum) is not int or minimum < 30 or value['development_examples_per_task'] < 30:
@@ -170,6 +176,9 @@ def load_loop_config(path='config/distillation_loop.json'):
         raise ValueError('Invalid LoRA dropout')
     if type(t['replay_previous_rounds']) is not bool:
         raise ValueError('replay_previous_rounds must be boolean')
+    batch_size = value['inference'].get('batch_size', 2)
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError('Inference batch_size must be a positive integer')
     n = value['inference']['max_new_tokens']
     if type(n) is not int or not 0 < n < t['max_sequence_length']:
         raise ValueError('Completion budget must fit within the sequence length')
