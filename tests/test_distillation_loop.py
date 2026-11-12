@@ -147,17 +147,27 @@ class ControllerTests(unittest.TestCase):
         self.config['quality']['minimum_deterministic_check_rate'] = 0
         self.config['quality']['deterministic_template_fraction'] = 0
         self.config['evaluation'] = {'mode': 'synthetic_smoke'}
+        self.config['student_conditioned_training'] = False
         self.config['development_examples_per_task'] = 3
         self.base=load_config()
         self.development=[{'record':record(i=999),'reference':{}}]
         self.data_objects=[]
-    def run_loop(self,runtime,evaluator):
+    def run_loop(self,runtime,evaluator, **kwargs):
         def data(*args):
             obj=FakeCurriculum(*args);self.data_objects.append(obj);return obj
         with patch('distillation_loop.controller.LightevalEvaluator', return_value=evaluator), \
              patch('distillation_loop.controller.frozen_development', return_value=self.development), \
              patch('distillation_loop.controller.CurriculumData', side_effect=data):
-            return run_loop(runtime, self.base, self.config)
+            return run_loop(runtime, self.base, self.config, **kwargs)
+
+    def test_release_seeds_baseline_once_and_local_state_takes_precedence(self):
+        runtime = FakeRuntime()
+        state = self.run_loop(runtime, FakeEvaluator([.95]), initial_adapter='github-adapter')
+        self.assertEqual(runtime.restores[:2], ['github-adapter', state['initial_checkpoint']])
+        resumed = FakeRuntime()
+        self.run_loop(resumed, FakeEvaluator([]), initial_adapter='newer-github-adapter')
+        self.assertEqual(resumed.restores[0], state['last_checkpoint'])
+        self.assertNotIn('newer-github-adapter', resumed.restores)
 
     def test_threshold_stop_and_completed_resume_no_training(self):
         runtime=FakeRuntime();evaluator=FakeEvaluator([.1,.7,.95])
@@ -180,6 +190,27 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(runtime.trains),2)
         self.assertIn('round_01',result['best_checkpoint'])
         self.assertEqual(runtime.restores[-1],result['best_checkpoint'])
+
+    def test_extend_legacy_completed_run_and_resume_after_interruption(self):
+        runtime = FakeRuntime()
+        evaluator = FakeEvaluator([.1, .6, .4, .5, .7], fail_at=5)
+        initial = self.run_loop(runtime, evaluator)
+        self.assertEqual(initial['completed_rounds'], 3)
+        state_path = Path(self.tmp.name) / 'loop_state.json'
+        initial.pop('round_limit')
+        atomic_json(state_path, initial)
+        with self.assertRaises(RuntimeError):
+            self.run_loop(runtime, evaluator, round_limit=9)
+        saved = json.loads(state_path.read_text())
+        self.assertEqual(saved['round_limit'], 9)
+        self.assertEqual(saved['completed_rounds'], 3)
+        self.assertEqual(len(runtime.trains), 4)
+        result = self.run_loop(runtime, evaluator)
+        self.assertEqual(result['completed_rounds'], 9)
+        self.assertEqual(len(runtime.trains), 9)
+        self.assertEqual([entry['round'] for entry in result['history']], list(range(1, 10)))
+        self.assertEqual(result['baseline_report'], initial['baseline_report'])
+        self.assertEqual(self.config['max_rounds'], 3)
 
     def test_baseline_already_satisfies(self):
         runtime=FakeRuntime();result=self.run_loop(runtime,FakeEvaluator([.99]))

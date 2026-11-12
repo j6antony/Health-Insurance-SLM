@@ -29,13 +29,22 @@ def build(output=None, update_notebook=True):
             archive.writestr(info,path.read_bytes())
     checksum=hashlib.sha256(output.read_bytes()).hexdigest()
     if update_notebook:
-        notebook=ROOT/'distillation_colab_100.ipynb'
-        nb=json.loads(notebook.read_text())
-        for cell in nb['cells']:
-            source=''.join(cell.get('source',[]))
-            source=re.sub(r'EXPECTED_BUNDLE_SHA256 = "[A-Za-z0-9_]+"',f'EXPECTED_BUNDLE_SHA256 = "{checksum}"',source)
-            cell['source']=source.splitlines(True)
-        notebook.write_text(json.dumps(nb,indent=1,ensure_ascii=False)+'\n')
+        manifest = {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in sorted(files)}
+        for name in ('distillation_colab_100.ipynb', 'distillation_colab_1000.ipynb',
+                     'distillation_kaggle_100.ipynb'):
+            notebook = ROOT / name
+            nb = json.loads(notebook.read_text())
+            for cell in nb['cells']:
+                source = ''.join(cell.get('source', []))
+                source = re.sub(r'EXPECTED_BUNDLE_SHA256 = "[A-Za-z0-9_]+"',
+                                f'EXPECTED_BUNDLE_SHA256 = "{checksum}"', source)
+                if name == 'distillation_kaggle_100.ipynb':
+                    source = re.sub(r'^EXPECTED_BUNDLE_FILES = \{.*?^\}|^EXPECTED_BUNDLE_FILES = \{\}',
+                                    lambda _: 'EXPECTED_BUNDLE_FILES = ' + json.dumps(manifest, indent=4),
+                                    source, flags=re.MULTILINE | re.DOTALL)
+                cell['source'] = source.splitlines(True)
+            notebook.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + '\n')
     print('Colab bundle:',output,'SHA256:',checksum)
     return output
 

@@ -171,7 +171,7 @@ class ControllerHardeningTests(unittest.TestCase):
         self.assertFalse((Path(f.tmp.name) / 'round_01/training_plan.json').exists())
 
     def test_final_regression_keeps_baseline_as_release(self):
-        f = self.fixture(); f.config['evaluation']['minimum_test_examples_per_task'] = 3
+        f = self.fixture(); f.config['evaluation'].update(mode='reviewed', minimum_test_examples_per_task=3)
         final = [{'record': fixtures.record(i=1000), 'reference': {}}]
         runtime = fixtures.FakeRuntime()
         with patch('distillation_loop.controller.load_benchmarks', return_value=(f.development, final)):
@@ -203,6 +203,7 @@ class FullLoopIntegrationTests(unittest.TestCase):
             root = Path(folder)
             parent = MockParent()
             cfg = load_loop_config()
+            cfg['student_conditioned_training'] = False
             cfg.update(output_dir=str(root / 'run'), max_rounds=1, scenarios_per_round=4, development_examples_per_task=1)
             cfg['evaluation'].update(mode='reviewed', validation_path=str(root / 'validation.jsonl'), test_path=str(root / 'test.jsonl'), minimum_test_examples_per_task=1)
             for split in ('validation', 'test'):

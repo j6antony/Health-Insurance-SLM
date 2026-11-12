@@ -10,9 +10,9 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from distillation_loop.colab import colab_configs, save_colab_subset
+from distillation_loop.colab import UnslothStudentRuntime, colab_configs, l4_runtime_config, save_colab_subset
 from distillation_loop.benchmarks import load_benchmarks
 from distillation_loop.core import load_loop_config
 from distillation_loop.drive_backup import save_drive_adapter
@@ -39,12 +39,13 @@ class ColabProfileTests(unittest.TestCase):
         self.assertEqual(Counter(counts.values()),Counter({5:8,6:10}))
         for task in counts:
             self.assertEqual(len({x['verification']['family'] for x in rows if x['record']['task']==task}),counts[task])
-        self.assertEqual(profile['max_rounds'],3)
+        self.assertEqual(profile['max_rounds'],5)
         self.assertEqual(profile['scenarios_per_round'],24)
         self.assertEqual(profile['inference']['batch_size'],1)
         self.assertEqual(profile['training']['lora_rank'],8)
-        # Kaggle's default still loads its complete 540 examples.
-        self.assertEqual(len(load_benchmarks(original,fixtures.SCHEMAS)[0]),540)
+        development, holdout = load_benchmarks(original, fixtures.SCHEMAS)
+        self.assertEqual(len(development), 432)
+        self.assertEqual(len(holdout), 108)
 
     def test_subset_stability_limits_and_export_resume(self):
         _,profile=self.profile()
@@ -77,6 +78,54 @@ class ColabProfileTests(unittest.TestCase):
             rows=runtime.infer_many([{}, {}, {}])
         self.assertEqual(len(rows),3)
         self.assertEqual(batches,[1,1,1])
+
+    def test_l4_batches_preserve_the_saved_profile_and_effective_batch(self):
+        _, profile = self.profile()
+        profile['training'].update(per_device_train_batch_size=2, gradient_accumulation_steps=2)
+        before = copy.deepcopy(profile)
+        runtime = l4_runtime_config(profile)
+        self.assertEqual(profile, before)
+        self.assertEqual(runtime['training']['per_device_train_batch_size'], 4)
+        self.assertEqual(runtime['training']['gradient_accumulation_steps'], 1)
+        self.assertEqual(runtime['inference']['batch_size'], 8)
+        with self.assertRaisesRegex(ValueError, 'divisor'):
+            l4_runtime_config(profile, train_batch_size=3)
+
+    def test_inference_oom_reduces_batch_size_without_losing_prediction_order(self):
+        runtime = object.__new__(StudentRuntime)
+        runtime.config = {'training': {'max_sequence_length': 100},
+                          'inference': {'max_new_tokens': 10, 'batch_size': 8}}
+        runtime.prepare = lambda: None
+        runtime.tokenizer = lambda text, **kwargs: {'input_ids': list(text)}
+        oom = type('OOM', (Exception,), {})
+        fake_torch = SimpleNamespace(cuda=SimpleNamespace(OutOfMemoryError=oom, empty_cache=Mock()))
+        batches = []
+
+        def generate(texts):
+            batches.append(len(texts))
+            if len(texts) > 4:
+                raise oom()
+            return texts
+
+        runtime._generate_batch = generate
+        payloads = ['x' * n for n in range(10, 0, -1)]
+        with patch.dict('sys.modules', {'torch': fake_torch}), \
+             patch('distillation_loop.student.render_prompt', side_effect=lambda tokenizer, text: text):
+            self.assertEqual(runtime.infer_many(payloads), payloads)
+        self.assertEqual(batches, [8, 4, 4, 2])
+        fake_torch.cuda.empty_cache.assert_called_once_with()
+
+    def test_unsloth_switches_modes_between_generation_and_training(self):
+        model = object()
+        runtime = UnslothStudentRuntime(model, SimpleNamespace(pad_token_id=0), {})
+        fast_model = Mock()
+        with patch.dict('sys.modules', {'unsloth': SimpleNamespace(FastLanguageModel=fast_model)}):
+            with patch.object(StudentRuntime, 'infer_many', return_value=['prediction']) as generate:
+                self.assertEqual(runtime.infer_many([{}], batch_size=1), ['prediction'])
+                generate.assert_called_once_with([{}], 1)
+            runtime._set_training_mode()
+        fast_model.for_inference.assert_called_once_with(model)
+        fast_model.for_training.assert_called_once_with(model)
 
     def test_drive_data_uses_local_process_locks(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -143,7 +192,7 @@ class DriveBackupTests(unittest.TestCase):
                 report['examples_per_task']=dict(counts)
                 return report
         with tempfile.TemporaryDirectory() as folder:
-            profile.update(output_dir=folder,max_rounds=1)
+            profile.update(output_dir=folder,max_rounds=1,student_conditioned_training=False)
             def curriculum(base,excluded,directory):
                 self.assertEqual(len(excluded),540)
                 return fixtures.FakeCurriculum(base,excluded,directory)
@@ -163,12 +212,24 @@ class ColabNotebookTests(unittest.TestCase):
             if cell['cell_type']=='code':
                 text=''.join(cell['source']);code+=text
                 ast.parse(''.join('pass\n' if line.startswith('%') else line for line in cell['source']))
-        self.assertIn('StudentRuntime(model, tokenizer, loop_config)',code)
+        self.assertIn('UnslothStudentRuntime.load("Qwen/Qwen3-8B", loop_config)',code)
+        self.assertLess(code.index('import unsloth'), code.index('UnslothStudentRuntime.load'))
         self.assertNotIn('DualGPURuntime',code)
-        self.assertIn('device_map={"": 0}',code)
         self.assertIn('drive.mount',code)
         self.assertIn('RUN_DIR = DRIVE_ROOT / RUN_NAME',code)
         self.assertIn('os.environ["GITHUB_ADAPTER_UPLOAD"] = "0"',code)
+
+    def test_kaggle_notebook_uses_verified_bundle_and_release_before_model_load(self):
+        notebook = json.loads((ROOT / 'distillation_kaggle_100.ipynb').read_text())
+        code = '\n'.join(''.join(cell['source']) for cell in notebook['cells']
+                         if cell['cell_type'] == 'code')
+        ast.parse(code)
+        self.assertLess(code.index('seed = restore_latest_release'),
+                        code.index('student_runtime = UnslothStudentRuntime.load'))
+        self.assertIn('initial_adapter=seed["checkpoint"] if seed else None', code)
+        colab = (ROOT / 'distillation_colab_100.ipynb').read_text()
+        checksum = re.search(r'EXPECTED_BUNDLE_SHA256 = "([0-9a-f]{64})"', code).group(1)
+        self.assertIn(checksum, colab)
 
     def test_portable_bundle_matches_notebook_and_contains_no_run_or_secrets(self):
         from tools.build_colab_bundle import build

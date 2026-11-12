@@ -32,4 +32,27 @@ With `OPENAI_API_KEY` set in the environment, `python3 run_self_instruct.py all`
 
 ## Notebook distillation loop
 
-[distillation.ipynb](distillation.ipynb) connects generation, student inference/cleaning, parent targets, QLoRA SFTTrainer, and Lighteval custom metrics. It prioritizes weak tasks from development scores and stops when all thresholds pass or after the configured maximum rounds (default 5). See [the loop guide](DISTILLATION_LOOP.md) and [loop configuration](config/distillation_loop.json). The notebook uses the existing loaded Qwen3-8B student and requires a CUDA GPU.
+[distillation.ipynb](distillation.ipynb) runs QLoRA SFT with ChatGPT (`gpt-6-luna`) and Qwen3-8B. ChatGPT assesses Qwen's drafts against the evidence and a source-only reference, then minimally corrects drafts with identified errors. Correct drafts and corrected targets must pass the grounding audit. Changes to conclusions require deterministic checks on the affected fields. Each round saves its assessments and quarantined drafts, and recurring error categories from fresh candidates guide the next round.
+
+The bundled synthetic benchmark provides 432 development cases for checkpoint selection and 108 final cases from separate source families. After selection, the loop compares the initial and selected adapters on the holdout. See [the loop guide](DISTILLATION_LOOP.md) and [configuration](config/distillation_loop.json).
+
+[distillation_kaggle_100.ipynb](distillation_kaggle_100.ipynb) runs the
+1,000-pair Unsloth experiment on one Kaggle GPU. It collects 100 new training
+pairs per round for ten rounds, with 60 broadly generated pairs and 40
+student-screened pairs. Recurring training errors steer only the latter group
+once feedback is available. It retains 100 fixed development cases and a
+108-case holdout. The API budget can pause the run. Preserve the whole run
+folder to continue collecting pairs in another session. Enable Internet and GPU access, attach the
+matching `outputs/colab_distillation_bundle.zip` as a Kaggle Input or open the
+notebook from the updated checkout, and set `OPENAI_API_KEY` in Kaggle Secrets.
+Run `python3 tools/build_colab_bundle.py` to regenerate the ZIP after code changes.
+
+A fresh run checks `j6antony/Health-Insurance-SLM` Releases, including adapter
+prereleases, and initializes from the newest compatible adapter whose ZIP passes
+SHA-256 verification. Add `GITHUB_TOKEN` with Contents read access for a private
+repository. The notebook uses the released adapter's LoRA settings so it can
+continue training older rank-16 adapters. Existing local run state takes
+precedence. Release ZIPs carry weights and adapter configuration, so a
+release-based run starts a new baseline, round history, and API budget.
+Set `UPLOAD_ADAPTERS_TO_GITHUB = True` and provide Contents write access to
+publish completed rounds for the next fresh Kaggle session.

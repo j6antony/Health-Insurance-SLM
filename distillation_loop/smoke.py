@@ -5,7 +5,7 @@ from pathlib import Path
 
 def smoke_configs(parent_config, loop_config, output_dir):
     parent, loop = copy.deepcopy(parent_config), copy.deepcopy(loop_config)
-    loop.update(max_rounds=1, scenarios_per_round=8,
+    loop.update(max_rounds=1, scenarios_per_round=8, student_conditioned_training=False,
                 development_examples_per_task=1, development_fill_attempts=1,
                 output_dir=str(Path(output_dir)))
     loop['evaluation'] = {

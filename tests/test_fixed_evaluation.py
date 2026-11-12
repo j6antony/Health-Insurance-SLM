@@ -22,6 +22,8 @@ class FixedEvaluationTests(unittest.TestCase):
     def test_checked_in_corpus_reproduces_and_validates_all_540(self):
         config=load_loop_config()
         self.assertEqual(config['evaluation']['mode'],'fixed')
+        config['evaluation'].pop('holdout_families_per_task')
+        config['development_examples_per_task'] = 30
         rows,test=load_benchmarks(config,fixtures.SCHEMAS)
         self.assertEqual(test,[])
         self.assertEqual(len(rows),540)
@@ -53,7 +55,8 @@ class FixedEvaluationTests(unittest.TestCase):
         with patch('distillation_loop.data.Pipeline',side_effect=AssertionError('No API generation')):
             report=readiness(load_config(),load_loop_config(),check_runtime=False)
             self.assertTrue(report['ready'])
-            self.assertEqual(report['validation_examples'],540)
+            self.assertEqual(report['validation_examples'],432)
+            self.assertEqual(report['test_examples'],108)
             self.assertEqual(report['generated_validation_target'],0)
             _,smoke=smoke_configs(load_config(),load_loop_config(),'/tmp/fixed-smoke-fixture')
             rows,_=load_benchmarks(smoke,fixtures.SCHEMAS)
@@ -63,7 +66,8 @@ class FixedEvaluationTests(unittest.TestCase):
     def test_controller_uses_bundled_cases_instead_of_teacher_development_generation(self):
         class Evaluator:
             def evaluate(self,rows,directory):
-                self.rows=rows
+                if not hasattr(self, 'rows'):
+                    self.rows = rows
                 report=fixtures.report(.99)
                 report['examples_per_task']={t:30 for t in fixtures.SCHEMAS}
                 return report
@@ -72,7 +76,11 @@ class FixedEvaluationTests(unittest.TestCase):
             config=load_loop_config();config['output_dir']=folder
             with patch('distillation_loop.controller.frozen_development',side_effect=AssertionError('No API evaluation generation')),patch('distillation_loop.controller.LightevalEvaluator',return_value=evaluator):
                 result=run_loop(fixtures.FakeRuntime(),load_config(),config)
-            self.assertEqual(len(evaluator.rows),540)
+            self.assertEqual(len(evaluator.rows),432)
+            self.assertFalse(result['promotion']['accepted'])
+            self.assertIn('final_comparison', result)
+            split = json.loads((Path(folder) / 'evaluation_split.json').read_text())
+            self.assertFalse(set(split['development']['source_groups']) & set(split['holdout']['source_groups']))
             self.assertEqual(result['completed_rounds'],0)
             self.assertEqual(result['development_hash'],digest(evaluator.rows))
 

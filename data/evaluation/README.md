@@ -1,3 +1,47 @@
+# Standalone inference review
+
+`inference_review_v1.jsonl` contains 100 synthetic cases across all 18 tasks,
+with five or six cases per task. It includes 18 newly authored cases and 82 cases
+from the current fixed holdout. Older adapters may have used those holdout
+families for development. Keep this file for evaluation.
+
+In a Kaggle session with GPU and Internet enabled, run from the extracted
+project directory. Use the Python environment with GPU PyTorch and install the
+inference dependencies:
+
+```sh
+python -m pip install transformers==4.57.3 peft==0.18.0 accelerate==1.11.0 bitsandbytes==0.48.2
+CUDA_VISIBLE_DEVICES=0 python -m distillation_loop.inference_review \
+  --output /kaggle/working/inference_review_predictions.jsonl
+```
+
+The runner fetches the newest compatible adapter from
+`j6antony/Health-Insurance-SLM` GitHub Releases, including prereleases. It
+verifies the downloaded ZIP's SHA-256 and records the release tag and hash in
+every result. For a private repository, pass a `GITHUB_TOKEN` with Contents
+read access through the environment using Kaggle Secrets. Use `--adapter`
+with a local adapter directory or `--base` to explicitly select other weights.
+The command runs without a teacher API key.
+
+For the Colab notebook's Unsloth generation backend, install
+`requirements-colab.txt` with the existing CUDA PyTorch version constrained,
+then add `--unsloth`. The runner restores the adapter with its saved LoRA rank,
+alpha, and dropout. Results record the generation backend. Use a fresh output
+filename for a first Unsloth run.
+
+To publish the JSONL as an asset on the adapter's GitHub release, add
+`--upload-to-github` and use a `GITHUB_TOKEN` with Contents write access to
+`j6antony/Health-Insurance-SLM`. The predictions inherit the release's
+visibility. The command prints the verified asset URL. If the upload fails
+after inference finishes, rerun the same command with the same output path
+to upload the saved file.
+
+Each result includes the case ID, task, full model input, model and adapter
+identity, and the raw completion with any truncation or context error.
+Results are saved after each case. Use a new output filename for a new
+inference run. Share the prediction JSONL or its release asset for individual
+assessment.
+
 # Bundled fixed evaluation: default full-run workflow
 
 The saved dataset is `fixed_validation_v1.jsonl`, with its companion
@@ -16,21 +60,18 @@ make parent API calls. A missing, altered or incompatible file is an error with
 ignore rules so they travel with the repository. Sync the updated repository into
 Kaggle before running the notebook; merely updating the notebook is insufficient.
 
-The full notebook defaults to `TEST_RUN = False` and a new
-`distillation_loop_fixed_v1` run directory. The student answers all 540 cases for
-its baseline and after each round. Student inference still consumes GPU time.
-References stay fixed across rounds and reruns. The existing loop records their
-hash in run state. Evaluation records are excluded from curriculum generation;
-they are never used as SFT targets or teacher demonstrations.
+The full notebook defaults to `TEST_RUN = False` and the
+`distillation_loop_adaptive_v1` run directory. A seeded split reserves two source
+families per task for the final holdout. All three variants of each reserved family
+stay together. The loop uses 432 development cases for checkpoint selection and
+108 final cases to compare the initial and selected adapters. It excludes the
+entire corpus from training generation through local duplicate checks and saves
+the chosen case IDs, family IDs and hashes in `evaluation_split.json`.
 
-Training remains unchanged: the default round targets 72 new pairs, with 25%
-independently code-computed fictional-rule templates and the remainder generated
-and audited by the parent API. Replay, task feedback, regression checks, checkpoint
-selection and GitHub uploads continue. API budgets now cover training generation
-and verification, not construction of the evaluation set. Exact reference-based
-prose scoring is conservative and may score valid paraphrases low; it is not a
-clinical entailment judge. The best experimental checkpoint is selected normally;
-synthetic results do not satisfy the independent-gold promotion gate.
+The 100-case Colab and Kaggle profiles sample development cases after reserving
+the same final holdout. Exact reference-based prose scoring is conservative and
+can score valid paraphrases low. Synthetic evaluation supports experimental
+checkpoint selection. Promotion requires independent reviewed evidence.
 
 Smoke runs deterministically select one saved example per task (18 total), also
 without paid evaluation-data generation. `automatic` and `synthetic_smoke` modes
@@ -50,11 +91,13 @@ unreadable values, conflicting sources, date applicability, AND/OR, exceptions,
 calculation boundaries, attribution, planned versus completed actions, scope and
 injection. No real code meanings, medical guidelines or legal obligations are
 asserted as authoritative. Mechanical checks and authored references do not
-establish real-world generalization or eliminate semantic leakage. The 540 cases
-are a reusable development/selection benchmark, not an untouched final test set.
+establish real-world generalization or eliminate semantic leakage. The bundled
+holdout is isolated within a fresh run. Earlier versions used the entire corpus
+for development, so an adapter selected by an earlier run may already reflect
+performance on the reserved families.
 
-Run `python3 -m distillation_loop.preflight --skip-runtime` to confirm that all
-540 cases load with `generated_validation_target: 0` before a Kaggle run.
+Run `python3 -m distillation_loop.preflight --skip-runtime` to confirm that the
+432 development cases and 108 holdout cases load with `generated_validation_target: 0` before a Kaggle run.
 
 ## Optional independently reviewed mode
 

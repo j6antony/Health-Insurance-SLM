@@ -108,6 +108,7 @@ class CurriculumData:
         self.base_weights=copy.deepcopy(self.pipeline.scheduler.weights)
         self.owns_lock=False
         self.deterministic_fraction = 0.0
+        self.export_reference_pairs = True
 
     def open(self):
         self.lock=self.pipeline.store.lock()
@@ -133,7 +134,7 @@ class CurriculumData:
         self.pipeline.scheduler.weights = weights
         silver_target = target - len(templates)
         if silver_target:
-            self.pipeline.build_pairs(silver_target)
+            self.pipeline.build_pairs(silver_target, export_pairs=self.export_reference_pairs)
         # Template IDs are stable; cumulative replay does not create extra unique data.
         return (templates + checked_pairs(self.pipeline)[:silver_target])[:target]
 

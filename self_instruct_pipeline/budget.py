@@ -25,7 +25,7 @@ class APIBudget:
         self.limits = {'max_calls': max_calls, 'max_cost_usd': str(cost)}
 
     @contextlib.contextmanager
-    def activate(self):
+    def activate(self, *, allow_increase=False):
         # A separate folder/lock prevents two notebooks sharing the same budget.
         with self.store.lock():
             path = self.store.path('state.json')
@@ -33,10 +33,18 @@ class APIBudget:
                 raise ValueError('Existing API usage has no budget state; use a fresh run directory')
             self.state = json.loads(path.read_text()) if path.exists() else {
                 'limits': self.limits, 'calls': 0, 'accounted_usd': '0', 'unknown_usage_calls': 0}
-            if self.state['limits'] != self.limits:
-                raise ValueError('Budget limits changed; retain limits or use a new run directory')
             if ACTIVE_BUDGET.get() is not None:
                 raise ValueError('Nested API budgets are not supported')
+            previous = self.state['limits']
+            if (previous['max_calls'] != self.limits['max_calls']
+                    or Decimal(previous['max_cost_usd']) != Decimal(self.limits['max_cost_usd'])):
+                if not allow_increase:
+                    raise ValueError('Budget limits changed; explicitly allow an increase to resume this run')
+                if (self.limits['max_calls'] < previous['max_calls']
+                        or Decimal(self.limits['max_cost_usd']) < Decimal(previous['max_cost_usd'])):
+                    raise ValueError('Resuming with a budget increase cannot lower an existing limit')
+                self.state['limits'] = self.limits
+                atomic_json(path, self.state)
             token = ACTIVE_BUDGET.set(self)
             try:
                 yield self
@@ -59,8 +67,14 @@ class APIBudget:
                 i, w, o = i * 2, w * 2, o * Decimal('1.5')
             reservation = (input_bound * max(i, w) + body['max_output_tokens'] * o) / 1000000
         accounted = Decimal(self.state['accounted_usd'])
-        if self.state['calls'] >= self.limits['max_calls'] or accounted + reservation > Decimal(self.limits['max_cost_usd']):
-            raise BudgetExceeded('API budget reached: no further requests sent. Inspect api_usage.csv and api_budget/state.json.')
+        if self.state['calls'] >= self.limits['max_calls']:
+            raise BudgetExceeded(f"API request limit reached ({self.state['calls']}/{self.limits['max_calls']}). "
+                                 'Raise the request limit to resume the same run.')
+        cost_limit = Decimal(self.limits['max_cost_usd'])
+        if accounted + reservation > cost_limit:
+            raise BudgetExceeded(f'API cost limit reached (${accounted:.4f} accounted + '
+                                 f'${reservation:.4f} reserved for the next request, limit ${cost_limit:.2f}). '
+                                 'Raise the cost limit to resume the same run.')
         # Persist BEFORE sending: a crash or unknown response retains its allowance.
         self.state['calls'] += 1
         self.state['unknown_usage_calls'] += 1

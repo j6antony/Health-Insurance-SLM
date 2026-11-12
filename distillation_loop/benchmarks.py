@@ -9,6 +9,8 @@ from self_instruct_pipeline.validation import validate_answer, validate_schema, 
 def load_benchmarks(config, schemas):
     settings = config.get('evaluation', {})
     if settings.get('mode') == 'fixed':
+        if settings.get('holdout_families_per_task'):
+            return fixed_family_split(config, schemas)
         return load_fixed_validation(config, schemas), []
     if settings.get('mode') in ('synthetic_smoke', 'automatic'):
         return None, []
@@ -150,3 +152,36 @@ def fixed_subset(rows, tasks, total, minimum, seed):
             raise ValueError('Requested fixed subset exceeds a task supply')
         selected.extend(ordered[:quotas[task]])
     return selected
+
+
+def fixed_family_split(config, schemas):
+    """Reserve whole source groups before sampling the development subset."""
+    import copy
+    import random
+
+    settings = config['evaluation']
+    count = settings['holdout_families_per_task']
+    if type(count) is not int or count < 1:
+        raise ValueError('Holdout family count must be a positive integer')
+    full = copy.deepcopy(config)
+    full['evaluation'].pop('total_examples', None)
+    full['development_examples_per_task'] = 30
+    rows = load_fixed_validation(full, schemas)
+    rng = random.Random(settings.get('subset_seed', config['random_seed']))
+    reserved = set()
+    owners = {}
+    for item in rows:
+        group, task = item['source_group'], item['record']['task']
+        if owners.setdefault(group, task) != task:
+            raise ValueError('Fixed source group spans multiple tasks')
+    for task in sorted(schemas):
+        groups = sorted(group for group, owner in owners.items() if owner == task)
+        if count >= len(groups):
+            raise ValueError('Holdout must leave development families for each task')
+        reserved.update(rng.sample(groups, count))
+    development = [item for item in rows if item['source_group'] not in reserved]
+    holdout = [item for item in rows if item['source_group'] in reserved]
+    minimum = config['development_examples_per_task']
+    total = settings.get('total_examples', minimum * len(schemas))
+    return fixed_subset(development, schemas, total, minimum,
+                        settings.get('subset_seed', config['random_seed'])), holdout

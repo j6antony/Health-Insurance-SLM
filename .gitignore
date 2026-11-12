@@ -16,3 +16,4 @@ frontend/dist/
 !/data/evaluation/README.md
 !/data/evaluation/fixed_validation_v1.jsonl
 !/data/evaluation/fixed_validation_v1.manifest.json
+!/data/evaluation/inference_review_v1.jsonl

@@ -1,10 +1,8 @@
-> Current default: load the bundled 540-case fixed evaluation dataset, with no
-> parent API calls for evaluation-data generation. Use `TEST_RUN = False` and
-> `evaluation.mode = "fixed"`. Teacher-generated training data, replay, selection
-> and GitHub uploads continue. Smoke runs select 18 saved cases from the same file.
-> See [the fixed evaluation contract](data/evaluation/README.md).
+## Student-conditioned training runs
 
+Fresh full runs use `student_conditioned_training: true`. The teacher writes and verifies answers from the supplied sources. The current adapter attempts adaptive candidates, and teacher feedback on those attempts prioritizes cases where the student struggled. The independently verified teacher answer is the SFT target for every selected case. Invalid or truncated student JSON counts as a format error, and inconsistent assessments leave the case eligible without error feedback. The round saves predictions, references, assessments, and quarantine reasons under `corrections/`.
 
+Only aggregate candidate errors affect later generation. The fixed benchmark reserves two entire source families per task for the final synthetic holdout. The full profile uses 432 development cases and 108 holdout cases. The 100-case profiles sample development cases from the remaining families and use the same holdout. The run records the split in `evaluation_split.json` and the initial-versus-selected holdout scores in `loop_state.json`. Synthetic results do not authorize model promotion. Use a fresh output directory when switching an existing run to student-conditioned training.
 
 # Notebook training and evaluation loop
 
@@ -17,13 +15,12 @@ The parent is GPT-6 Luna through the OpenAI Responses API. Provide `OPENAI_API_K
 The notebook calls one function, `run_loop(student_runtime, parent_config, loop_config)`. Its main flow is a plain bounded `for` loop in `distillation_loop/controller.py`; there are no injected factories or multi-phase state machine. Model-specific training and evaluation helpers stay in their own files.
 
 1. Prepare trainable LoRA adapters on the frozen quantized Qwen3-8B base.
-2. Create or load a frozen development set: three parent-checked synthetic examples for each of the 18 tasks (54 total by default). References are stored separately from student inputs.
-3. Evaluate the starting student with Lighteval custom metrics. Stop without training if all targets already pass.
-4. Ask Self-Instruct for new scenarios, using weighted deficits and the previous development per-task scores to prioritize weaknesses.
-5. Run the existing student on those prompts. Save raw and cleaned responses, including schema/evidence failures and truncation flags. Cleaning removes complete thinking/code-fence wrappers; it does not repair malformed JSON or invent fields.
-6. Generate and validate parent reference answers in separate calls. Train on those parent completions using TRL SFTTrainer. The student forward pass supplies the predictions whose cross-entropy loss is optimized against those labels. Sampled student text is diagnostic data, never an incorrect self-training target.
-7. Save the updated LoRA adapter and evaluate the same frozen development set through Lighteval.
-8. Stop when all score gates pass or when the round cap is reached. Otherwise generate the next round with higher weights for weak tasks. Restore the best saved adapter at the end.
+2. Load the fixed development benchmark and evaluate the starting adapter.
+3. Generate training scenarios and establish source-only references. Record Qwen's attempt with the current adapter.
+4. Assess, correct and audit the candidates. Select verified targets and save the round training plan.
+5. Train the LoRA adapter and score it on the frozen development benchmark.
+6. Use recurring candidate errors to guide the next round. Stop when all score gates pass or the round cap is reached.
+7. Compare the initial and selected adapters on the final holdout and restore the selected adapter.
 
 ## Defaults and bounds
 

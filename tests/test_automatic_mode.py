@@ -20,7 +20,7 @@ class AutomaticModeTests(unittest.TestCase):
         report=readiness(load_config(),config,check_runtime=False)
         self.assertTrue(report['ready'])
         self.assertFalse(report['manual_review_required'])
-        self.assertEqual(report['generated_validation_target'],540)
+        self.assertEqual(report['generated_validation_target'],432)
         self.assertEqual(load_benchmarks(config,fixtures.SCHEMAS),(None,[]))
 
     def test_full_automatic_training_selects_checkpoint_without_claiming_human_review(self):
@@ -40,4 +40,4 @@ class AutomaticModeTests(unittest.TestCase):
         self.assertEqual([c['source'] for c in books[0]['cells']],[c['source'] for c in books[1]['cells']])
         settings=next(''.join(c['source']) for c in books[0]['cells'] if c['cell_type']=='code' and 'TEST_RUN = False' in ''.join(c.get('source',[])))
         self.assertIn('loop_config["evaluation"]["mode"] = "fixed"',settings)
-        self.assertIn('distillation_loop_fixed_v1',settings)
+        self.assertIn('distillation_loop_adaptive_v1',settings)

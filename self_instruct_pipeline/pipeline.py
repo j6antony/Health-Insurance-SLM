@@ -150,6 +150,16 @@ class Pipeline:
                                     sampling['machine_demonstration_fraction'])
         messages = generation_messages(self.system, quotas, difficulty, seeds, self.schemas,
                                        self.references, coverage_state(self.accepted, self.scheduler))
+        feedback = getattr(self, 'training_candidate_feedback', {})
+        if feedback:
+            payload = json.loads(messages[-1]['content'])
+            payload['request']['training_candidate_errors'] = {
+                task: {category: count for category, count in feedback[task]['error_counts'].items() if count >= 2}
+                for task in quotas if task in feedback
+            }
+            messages[0]['content'] += ('\nUse recurring training_candidate_errors to generate new, diverse scenarios '
+                                       'that exercise those skills within the supplied task quotas.')
+            messages[-1]['content'] = json.dumps(payload, ensure_ascii=False)
         return {'task_quotas': quotas, 'difficulty': difficulty, 'seed_ids': [s['id'] for s in seeds],
                 'schemas': list(quotas), 'messages': messages}
 
@@ -408,7 +418,7 @@ class Pipeline:
             raise ValueError('Some answers failed automatic checks; resume retries unanswered scenarios')
         return len(done)
 
-    def build_pairs(self, target=None, max_replacement_passes=3):
+    def build_pairs(self, target=None, max_replacement_passes=3, *, export_pairs=True):
         """Target verified pairs; return/export a useful partial result on sample exhaustion."""
         target = target or self.config['generation']['target_accepted_scenarios']
         if type(target) is not int or target < 1 or type(max_replacement_passes) is not int or max_replacement_passes < 0:
@@ -451,7 +461,8 @@ class Pipeline:
             return result
         finally:
             # Keep usable data exportable even if an API/budget/validation limit stops work.
-            self.export()
+            if export_pairs:
+                self.export()
             self.checkpoint()
 
     def export(self):

@@ -40,6 +40,25 @@ class BudgetTests(unittest.TestCase):
                     OpenAIParent(settings, api_key='TEST', opener=opener).check_model()
             self.assertEqual(len(calls), 2)
 
+    def test_resume_raises_caps_without_resetting_accounting(self):
+        settings = load_config()['parent']
+        with tempfile.TemporaryDirectory() as folder:
+            with APIBudget(folder, max_calls=1).activate() as budget:
+                budget.reserve(settings, {'service_tier': 'default', 'max_output_tokens': 100})
+                accounted = budget.state['accounted_usd']
+                with self.assertRaisesRegex(BudgetExceeded, 'request limit reached'):
+                    budget.reserve(settings, None)
+            with APIBudget(folder, max_calls=2).activate(allow_increase=True) as budget:
+                self.assertEqual(budget.state['calls'], 1)
+                self.assertEqual(budget.state['unknown_usage_calls'], 1)
+                self.assertEqual(budget.state['accounted_usd'], accounted)
+                budget.reserve(settings, None)
+            with APIBudget(folder, max_calls=2).activate() as budget:
+                self.assertEqual(budget.state['calls'], 2)
+            with self.assertRaisesRegex(ValueError, 'cannot lower'):
+                with APIBudget(folder, max_calls=1).activate(allow_increase=True):
+                    pass
+
     def test_pre_request_cost_reservation_and_settlement(self):
         settings = load_config()['parent']
         body = {'service_tier': 'default', 'max_output_tokens': 12000, 'input': 'test'}

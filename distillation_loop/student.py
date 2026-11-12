@@ -144,21 +144,26 @@ class StudentRuntime:
             else:
                 valid.append(index)
         valid.sort(key=lambda i: lengths[i])
-        for start in range(0, len(valid), batch_size):
+        start = 0
+        while start < len(valid):
             indices = valid[start:start + batch_size]
-            oom = False
             try:
                 predictions = self._generate_batch([texts[i] for i in indices])
             except torch.cuda.OutOfMemoryError:
                 if len(indices) == 1:
                     raise
-                oom = True
-            if oom:
-                gc.collect(); clear_cuda_cache(torch)
-                predictions = [self._generate_batch([texts[i]])[0] for i in indices]
-            for index, prediction in zip(indices, predictions):
-                results[index] = prediction
-            print(f'GPU {os.environ.get("LOCAL_RANK", "0")} inference: {min(start + len(indices), len(valid))}/{len(valid)}', flush=True)
+            else:
+                for index, prediction in zip(indices, predictions):
+                    results[index] = prediction
+                start += len(indices)
+                print(f'GPU {os.environ.get("LOCAL_RANK", "0")} inference: {start}/{len(valid)}', flush=True)
+                continue
+
+            # Free the failed batch after its exception traceback has been released.
+            gc.collect()
+            clear_cuda_cache(torch)
+            batch_size = max(1, len(indices) // 2)
+            print(f'GPU inference ran out of memory; retrying with batch size {batch_size}.', flush=True)
         return results
 
     def _generate_batch(self, texts):
@@ -182,6 +187,9 @@ class StudentRuntime:
             self.model.config.use_cache = previous_cache
             self.tokenizer.padding_side = previous_padding
 
+    def _set_training_mode(self):
+        self.model.train()
+
     def train(self, pairs, schemas, output_dir):
         self.prepare()
         cfg = self.config['training']
@@ -204,18 +212,20 @@ def train_tokenized(runtime, examples, output_dir):
     if cfg['gradient_accumulation_steps'] % world_size:
         raise ValueError('gradient_accumulation_steps must be divisible by GPU process count')
     accumulation = cfg['gradient_accumulation_steps'] // world_size
+    microbatch_size = cfg.get('per_device_train_batch_size', 1)
+    effective_batch_size = microbatch_size * accumulation * world_size
     runtime.model.config.use_cache = False
     # Lighteval and inference must not leave the global autograd state disabled.
     torch.set_grad_enabled(True)
-    runtime.model.train()
+    runtime._set_training_mode()
     trainer = None
     try:
         args = SFTConfig(
-            output_dir=str(output_dir), per_device_train_batch_size=1,
+            output_dir=str(output_dir), per_device_train_batch_size=microbatch_size,
             gradient_accumulation_steps=accumulation,
             num_train_epochs=cfg['epochs_per_round'],
             max_steps=min(cfg['max_steps_per_round'],
-                          math.ceil(len(examples) / cfg['gradient_accumulation_steps']) * cfg['epochs_per_round']),
+                          math.ceil(len(examples) / effective_batch_size) * cfg['epochs_per_round']),
             learning_rate=cfg['learning_rate'], max_length=cfg['max_sequence_length'],
             completion_only_loss=True, packing=False,
             dataset_kwargs={'skip_prepare_dataset': True},
@@ -248,7 +258,10 @@ def train_tokenized(runtime, examples, output_dir):
         if trainer.is_world_process_zero():
             runtime.model.save_pretrained(checkpoint, safe_serialization=True)
             runtime.tokenizer.save_pretrained(checkpoint)
-            atomic_json(Path(output_dir) / 'training_metrics.json', result.metrics)
+            atomic_json(Path(output_dir) / 'training_metrics.json', {
+                **result.metrics, 'train_microbatch_size': microbatch_size,
+                'gradient_accumulation_steps': accumulation, 'effective_train_batch_size': effective_batch_size,
+            })
         trainer.accelerator.wait_for_everyone()
         return str(checkpoint)
     finally:

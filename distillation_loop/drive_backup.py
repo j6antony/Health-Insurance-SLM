@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from self_instruct_pipeline.persistence import atomic_json, digest
@@ -51,8 +52,13 @@ def save_drive_adapter(checkpoint, run_dir, round_id):
         temporary=archive.with_suffix('.zip.tmp')
         try:
             with zipfile.ZipFile(temporary,'w',compression=zipfile.ZIP_STORED) as output:
-                for path in files:output.write(path,path.name)
-                output.writestr('manifest.json',json.dumps(manifest,sort_keys=True))
+                # Fixed ZIP metadata keeps the checksum stable when a backup is rebuilt.
+                for path in files:
+                    entry = zipfile.ZipInfo(path.name)
+                    entry.file_size = path.stat().st_size
+                    with path.open('rb') as source, output.open(entry, 'w') as destination:
+                        shutil.copyfileobj(source, destination)
+                output.writestr(zipfile.ZipInfo('manifest.json'), json.dumps(manifest, sort_keys=True))
             if not verify_archive(temporary,manifest):
                 raise ValueError('Google Drive adapter archive verification failed; completed training remains saved')
             temporary.replace(archive)

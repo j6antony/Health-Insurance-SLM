@@ -151,6 +151,19 @@ def load_loop_config(path='config/distillation_loop.json'):
         for key in ('validation_path', 'manifest_path'):
             if not isinstance(evaluation.get(key), str) or not evaluation[key]:
                 raise ValueError('Fixed evaluation requires validation and manifest paths')
+    if type(value.get('student_conditioned_training', False)) is not bool:
+        raise ValueError('student_conditioned_training must be a boolean')
+    if type(value.get('stop_when_thresholds_met', True)) is not bool:
+        raise ValueError('stop_when_thresholds_met must be a boolean')
+    if 'adaptive_pairs_per_round' in value:
+        count = value['adaptive_pairs_per_round']
+        if (not value.get('student_conditioned_training') or type(count) is not int
+                or not 1 <= count <= value['scenarios_per_round']):
+            raise ValueError('adaptive_pairs_per_round requires adaptive training and a valid per-round quota')
+    if 'holdout_families_per_task' in evaluation:
+        holdout = evaluation['holdout_families_per_task']
+        if evaluation['mode'] != 'fixed' or type(holdout) is not int or not 1 <= holdout < 10:
+            raise ValueError('holdout_families_per_task requires fixed mode and 1–9 families')
     if 'total_examples' in evaluation:
         if evaluation['mode'] != 'fixed' or type(evaluation['total_examples']) is not int or evaluation['total_examples'] < 1:
             raise ValueError('total_examples requires fixed mode and a positive integer')
@@ -176,6 +189,9 @@ def load_loop_config(path='config/distillation_loop.json'):
         raise ValueError('Invalid LoRA dropout')
     if type(t['replay_previous_rounds']) is not bool:
         raise ValueError('replay_previous_rounds must be boolean')
+    train_batch_size = value['training'].get('per_device_train_batch_size', 1)
+    if type(train_batch_size) is not int or train_batch_size < 1:
+        raise ValueError('Training per_device_train_batch_size must be a positive integer')
     batch_size = value['inference'].get('batch_size', 2)
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError('Inference batch_size must be a positive integer')

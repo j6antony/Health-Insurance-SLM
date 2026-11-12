@@ -1,7 +1,7 @@
 {
   "max_rounds": 5,
   "scenarios_per_round": 72,
-  "development_examples_per_task": 30,
+  "development_examples_per_task": 24,
   "development_fill_attempts": 3,
   "thresholds": {
     "macro_task_score": 0.9,
@@ -9,7 +9,8 @@
     "schema_evidence_valid_rate": 0.98
   },
   "feedback_strength": 4.0,
-  "output_dir": "outputs/distillation_loop_fixed_v1",
+  "output_dir": "outputs/distillation_loop_adaptive_v1",
+  "student_conditioned_training": true,
   "training": {
     "max_sequence_length": 4096,
     "epochs_per_round": 1,
@@ -27,6 +28,7 @@
   "random_seed": 42,
   "evaluation": {
     "mode": "fixed",
+    "holdout_families_per_task": 2,
     "validation_path": "data/evaluation/fixed_validation_v1.jsonl",
     "manifest_path": "data/evaluation/fixed_validation_v1.manifest.json"
   },

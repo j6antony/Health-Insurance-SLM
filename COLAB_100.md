@@ -25,14 +25,15 @@ Colab VM's `/content/hf-cache`.
 
 | Setting | Colab default |
 | --- | --- |
-| Student | Qwen/Qwen3-8B, 4-bit NF4 with double quantization |
+| Student | Qwen/Qwen3-8B, 4-bit NF4 with double quantization via Unsloth |
 | GPUs | One visible CUDA device; explicit `device_map={"": 0}` |
-| Fixed evaluation cases | Exactly 100, 5 or 6 per task across all 18 tasks |
+| Fixed development cases | Exactly 100, 5 or 6 per task across all 18 tasks |
+| Final holdout | 108 cases from two reserved source families per task |
 | Subset selection | Seed 42; distinct case families preferred; frozen IDs/hash |
 | Evaluation-data API generation | None |
-| Training | Up to 3 rounds, 24 new pairs per round, cumulative replay |
-| Teacher/template mixture | 18 teacher pairs + 6 code-template pairs per round |
-| Maximum distinct training pairs | 72 |
+| Training | Up to 5 rounds, 24 new pairs per round, cumulative replay |
+| Verified targets | Independently generated teacher answers that pass source verification, with at least 25% deterministic-check coverage |
+| Maximum distinct training pairs | 120 |
 | Inference batch | 1 |
 | Training batch | 1, accumulated over 4 steps |
 | Sequence/completion limits | 3072 total / 1024 new tokens |
@@ -40,16 +41,19 @@ Colab VM's `/content/hf-cache`.
 | Optimizer cap | 20 steps per round; actual steps can be lower |
 | Separate API budget | 800 attempts / $2 estimated USD |
 
+Unsloth accelerates student generation and QLoRA on the single GPU.
+The run may end before five rounds if an existing stopping condition or the API budget is reached.
+
 The complete 540-case corpus is excluded from curriculum generation, including the
-440 questions outside this experiment's selected subset. This prevents leakage
-if you later compare the adapter on the full corpus. The export
+108 holdout cases and the remaining development-family cases. The teacher
+does not receive benchmark cases as demonstrations or correction inputs. The export
 `evaluation_100.jsonl` and `evaluation_100_manifest.json` record the exact subset on
 Drive. Changing the seed or data does not silently replace an existing run's set.
 
-A three-round run evaluates the 100 questions at baseline and after each round
-(up to 400 evaluation generations), plus diagnostic generations on training
-scenarios. '100' is the number of fixed questions per evaluation, not a cap on
-all inference across the entire experiment. The automatically authored dataset
+A five-round run evaluates the 100 questions at baseline and after each round
+(up to 600 evaluation generations), plus diagnostic generations on training
+scenarios. After selection, the initial and selected adapters each run on
+the 108-case holdout. The automatically authored dataset
 is synthetic; matching it does not establish clinical accuracy. API budgets may
 stop generation before training targets are reached. GPU/Drive execution has not
 been tested from this local workspace.
@@ -58,7 +62,9 @@ been tested from this local workspace.
 
 Everything important is written under:
 
-`/content/drive/MyDrive/HealthInsuranceSLM/colab_fixed100_v1`
+`/content/drive/MyDrive/HealthInsuranceSLM/colab_adaptive100_unsloth_v1`
+
+The student-conditioned experiment starts in a new Drive folder. Use the earlier notebook and matching bundle to resume an earlier run.
 
 This includes the initial and trained adapters, best-checkpoint pointers, loop
 state, frozen training plans, generated data, evaluation predictions/scores,
@@ -95,3 +101,10 @@ file. It produces `outputs/colab_distillation_bundle.zip` and updates the notebo
 embedded checksum. Ship the notebook and ZIP together. Notebook Python-cell,
 selection, persistence-lock, Drive archive and backup/resume behavior are tested
 locally. Actual CUDA/Colab authorization remains a live-runtime check.
+
+### Resuming after an API limit
+
+Keep the same run folder. In the training cell, increase `API_MAX_CALLS` or
+`API_MAX_COST_USD` as indicated by the error, then rerun that cell. These caps
+are cumulative. Requests and costs already recorded still count against the new
+limits. The notebook resumes from the state and checkpoints already on disk.
