@@ -30,11 +30,18 @@ def colab_configs(parent_config, loop_config, run_dir):
 
 def distillation_1000_configs(parent_config, loop_config, run_dir):
     parent, config = colab_configs(parent_config, loop_config, run_dir)
-    config.update(max_rounds=10, scenarios_per_round=100, adaptive_pairs_per_round=40,
-                  student_conditioned_training=True, stop_when_thresholds_met=False)
-    config['evaluation']['holdout_families_per_task'] = 2
-    # One full epoch on 1,000 pairs with four examples per optimizer update.
-    config['training']['max_steps_per_round'] = 250
+    config.update(max_rounds=5, scenarios_per_round=200, adaptive_pairs_per_round=80,
+                  student_conditioned_training=True, stop_when_thresholds_met=False,
+                  balanced_curriculum=True, rollback_on_regression=True, preference_training=True,
+                  development_examples_per_task=20, feedback_strength=2.0)
+    config['evaluation'].update(holdout_families_per_task=2, total_examples=360,
+                                semantic_judge=True)
+    config['training'].update(max_steps_per_round=100, learning_rate=3e-5,
+                              lora_rank=16, lora_alpha=32, replay_previous_rounds=False,
+                              replay_fraction=.15, lr_scheduler_type='cosine')
+    config['quality'].update(max_task_regression=.05, minimum_deterministic_check_rate=.15,
+                             deterministic_template_fraction=.20)
+    parent['generation']['scenario_blueprints'] = True
     return parent, config
 
 
@@ -59,13 +66,13 @@ def save_colab_subset(config, schemas, run_dir):
     """Export the exact evaluation inputs/selection manifest beside resume state."""
     rows, _ = load_benchmarks(config, schemas)
     directory = Path(run_dir); directory.mkdir(parents=True, exist_ok=True)
-    path = directory/'evaluation_100_manifest.json'
+    path = directory/f'evaluation_{len(rows)}_manifest.json'
     manifest = {'sha256': digest(rows), 'total': len(rows),
                 'per_task': dict(Counter(x['record']['task'] for x in rows)),
                 'case_ids': [x['record']['id'] for x in rows],
                 'subset_seed': config['evaluation']['subset_seed'],
                 'source_dataset': config['evaluation']['validation_path']}
-    case_path = directory/'evaluation_100.jsonl'
+    case_path = directory/f'evaluation_{len(rows)}.jsonl'
     if path.exists():
         import json
         from self_instruct_pipeline.persistence import read_jsonl
@@ -124,3 +131,62 @@ class UnslothStudentRuntime(StudentRuntime):
         from unsloth import FastLanguageModel
 
         FastLanguageModel.for_training(self.model)
+
+    def train_preferences(self, pairs, preferences, schemas, output_dir):
+        """Apply one low-rate ORPO pass to verified preference pairs."""
+        import gc
+        import json
+        import math
+        import torch
+        from datasets import Dataset
+        from trl import ORPOConfig, ORPOTrainer
+        from self_instruct_pipeline.prompt_builder import target_payload
+        from .student import clear_cuda_cache, render_prompt, tokenize_teacher_pair
+
+        cfg = self.config['training']
+        rejected = {row['scenario_id']: row['rejected'] for row in preferences}
+        rows = []
+        for record, answer in pairs:
+            if record['id'] not in rejected:
+                continue
+            payload = target_payload(record, schemas)
+            bad = rejected[record['id']]
+            # Leave room for the boundary and special tokens added by TRL.
+            limit = cfg['max_sequence_length'] - 4
+            try:
+                tokenize_teacher_pair(self.tokenizer, payload, answer, limit)
+                tokenize_teacher_pair(self.tokenizer, payload, bad, limit)
+            except ValueError:
+                continue
+            rows.append({'prompt': render_prompt(self.tokenizer, payload),
+                         'chosen': json.dumps(answer, ensure_ascii=False),
+                         'rejected': json.dumps(bad, ensure_ascii=False)})
+        if not rows:
+            return self.save_checkpoint(Path(output_dir) / 'adapter')
+
+        self._set_training_mode()
+        self.model.config.use_cache = False
+        trainer = None
+        try:
+            args = ORPOConfig(
+                output_dir=str(output_dir), learning_rate=1e-5, beta=.1,
+                max_length=cfg['max_sequence_length'], max_prompt_length=cfg['max_sequence_length'],
+                per_device_train_batch_size=1, gradient_accumulation_steps=4,
+                num_train_epochs=1, lr_scheduler_type='cosine', fp16=True, bf16=False,
+                gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
+                optim='adamw_torch', report_to='none', save_strategy='no',
+                seed=self.config['random_seed'])
+            trainer = ORPOTrainer(model=self.model, args=args, train_dataset=Dataset.from_list(rows),
+                                  processing_class=self.tokenizer)
+            result = trainer.train()
+            if not math.isfinite(result.training_loss):
+                raise ValueError('Preference training produced a nonfinite loss')
+            self.model = trainer.accelerator.unwrap_model(trainer.model)
+            atomic_json(Path(output_dir) / 'training_metrics.json',
+                        {**result.metrics, 'preference_pairs': len(rows)})
+            return self.save_checkpoint(Path(output_dir) / 'adapter')
+        finally:
+            self.model.eval()
+            del trainer
+            gc.collect()
+            clear_cuda_cache(torch)

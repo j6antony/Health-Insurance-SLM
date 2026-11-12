@@ -9,7 +9,7 @@ from self_instruct_pipeline.persistence import Store, atomic_json, digest
 from self_instruct_pipeline.prompt_builder import target_payload
 from self_instruct_pipeline.validation import ValidationError, validate_answer
 from .core import ResponseError, clean_response, feedback_weights, satisfactory, validate_report
-from .correction import adaptive_pairs
+from .correction import adaptive_pairs, balanced_selection
 from .data import CurriculumData, frozen_development
 from .evaluation import LightevalEvaluator
 from .benchmarks import load_benchmarks, load_fixed_validation, comparison
@@ -76,6 +76,9 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
     schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
     settings_hash = digest({'config': config, 'parent': parent_config,
                             'schemas': schemas, 'student': runtime.identity(), 'scoring': SCORING_VERSION, 'trusted_templates': TEMPLATE_VERSION})
+    if config['evaluation'].get('semantic_judge'):
+        from .semantic import SemanticJudge
+        settings_hash = digest([settings_hash, SemanticJudge.version])
     state_path = store.path('loop_state.json')
     quality = validate_quality_settings(config, schemas)
     adaptive = config.get('student_conditioned_training', False)
@@ -143,6 +146,15 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
         if state.get('test_hash', digest([])) != digest(final_test):
             raise ValueError('Frozen final test set has changed')
 
+        if config['evaluation'].get('semantic_judge'):
+            from .semantic import SemanticJudge
+            from self_instruct_pipeline.parent_backend import create_parent
+            from self_instruct_pipeline.usage import UsageLogger
+            judge_dir = store.path('benchmark_judging')
+            logger = UsageLogger(judge_dir)
+            client = create_parent(parent_config['parent'], logger=logger)
+            evaluator.semantic_judge = SemanticJudge(client, judge_dir, schemas)
+
         def finalize():
             reviewed_test = config['evaluation']['mode'] == 'reviewed'
             if final_test and 'final_comparison' not in state:
@@ -151,6 +163,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                 minimum = (config['evaluation']['minimum_test_examples_per_task'] if reviewed_test else
                            min(sum(x['record']['task'] == task for x in final_test) for task in schemas))
                 test_evaluator = LightevalEvaluator(runtime, schemas, minimum)
+                if hasattr(evaluator, 'semantic_judge'):
+                    test_evaluator.semantic_judge = evaluator.semantic_judge
                 runtime.restore(state['initial_checkpoint'])
                 test_evaluator.checkpoint_identity = state['initial_checkpoint']
                 baseline = test_evaluator.evaluate(final_test, store.path('final_test_baseline'))
@@ -179,7 +193,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
 
         # Evaluate once before training. A successful baseline needs no training.
         if state['latest_report'] is None:
-            print(f'Starting baseline evaluation on {len(development)} examples (local GPU; no teacher API calls).', flush=True)
+            print(f'Starting baseline evaluation on {len(development)} examples.', flush=True)
             evaluator.checkpoint_identity = state['initial_checkpoint']
             report = evaluator.evaluate(development, store.path('baseline'))
             validate_report(report, schemas, config['development_examples_per_task'])
@@ -200,6 +214,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
         data = CurriculumData(parent_config, exclusions, store.directory)
         data.deterministic_fraction = quality.get('deterministic_template_fraction', 0.0)
         data.export_reference_pairs = not adaptive
+        data.expanded_templates = config.get('balanced_curriculum', False)
         try:
             data.open()
             for round_id in range(state['completed_rounds'] + 1, limit + 1):
@@ -219,6 +234,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                     data.pipeline.training_candidate_feedback = {task: candidate_feedback[task] for task in scores}
                 weights = feedback_weights(data.base_weights, feedback_report, schemas,
                                            config['thresholds']['minimum_task_score'], config['feedback_strength'])
+                if config.get('balanced_curriculum'):
+                    weights = {task: min(3.0, max(1.0, weight)) for task, weight in weights.items()}
                 target = round_id * config['scenarios_per_round']
                 frozen_pairs = directory / 'training_plan.json'
                 diagnostics = {}
@@ -276,8 +293,29 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                 if not adaptive:
                     save_predictions(runtime, new_records, schemas, directory)
                 training_ids = [record['id'] for record, _ in pairs]
+                replay_fraction = config['training'].get('replay_fraction', 0)
                 if not config['training']['replay_previous_rounds']:
-                    pairs = new_pairs
+                    history_pairs = [pair for pair in pairs if pair[0]['id'] in previous]
+                    rejected_rounds = {entry['round'] for entry in state['history']
+                                       if not entry['regression_gate']['accepted']} if replay_fraction else set()
+                    if rejected_rounds:
+                        rejected_ids = set()
+                        for rejected_round in rejected_rounds:
+                            rows = json.loads((store.path(f'round_{rejected_round:02d}') /
+                                               'training_plan.json').read_text())['pairs']
+                            start = (rejected_round - 1) * config['scenarios_per_round']
+                            rejected_ids.update(row['record']['id'] for row in rows[start:start + config['scenarios_per_round']])
+                        history_pairs = [pair for pair in history_pairs if pair[0]['id'] not in rejected_ids]
+                    replay = balanced_selection(list(reversed(history_pairs)),
+                                                math.floor(len(new_pairs) * replay_fraction), initial=new_pairs)
+                    pairs = new_pairs + replay
+                if config.get('balanced_curriculum'):
+                    from collections import Counter
+                    atomic_json(directory / 'training_exposure.json', {
+                        'new': dict(Counter(record['task'] for record, _ in new_pairs)),
+                        'sft': dict(Counter(record['task'] for record, _ in pairs)),
+                        'preference_pairs': len(diagnostics.get('preference_pairs', [])),
+                    })
 
                 # 4. Train the existing student adapter, then evaluate it.
                 trained_path = directory / 'training_complete.json'
@@ -292,7 +330,20 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                     print('Reusing finished round training; retrying backup/evaluation.', flush=True)
                 else:
                     print(f'Starting QLoRA training on {len(pairs)} pairs.', flush=True)
-                    checkpoint = runtime.train(pairs, schemas, directory / 'sft')
+                    preferences = diagnostics.get('preference_pairs', [])
+                    sft_receipt = directory / 'sft_complete.json'
+                    if preferences and sft_receipt.exists():
+                        sft = json.loads(sft_receipt.read_text())
+                        if sft['training_hash'] != training_hash:
+                            raise ValueError('Saved SFT inputs changed')
+                        checkpoint = sft['checkpoint']
+                    else:
+                        checkpoint = runtime.train(pairs, schemas, directory / 'sft')
+                    if preferences:
+                        atomic_json(sft_receipt, {'checkpoint': checkpoint, 'training_hash': training_hash})
+                        runtime.restore(checkpoint)
+                        checkpoint = runtime.train_preferences(
+                            new_pairs, diagnostics['preference_pairs'], schemas, directory / 'preference')
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
                     print(f'Checkpoint saved: {checkpoint}', flush=True)
                 if os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1':
@@ -315,6 +366,16 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                 state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report, 'regression_gate': validation_safety, 'coverage': coverage})
                 if validation_safety['accepted'] and rank(report) > rank(state['best_report']):
                     state.update(best_report=report, best_checkpoint=checkpoint)
+                if config.get('rollback_on_regression') and not validation_safety['accepted']:
+                    state['last_checkpoint'] = state['best_checkpoint']
+                    runtime.restore(state['last_checkpoint'])
+                if 'case_scores' in report:
+                    baseline_cases = state['baseline_report']['case_scores']
+                    atomic_json(directory / 'paired_case_changes.json', {
+                        case_id: {**row, 'baseline': baseline_cases[case_id]['score']}
+                        for case_id, row in report['case_scores'].items()
+                        if row['score'] != baseline_cases[case_id]['score']
+                    })
                 if stop_on_thresholds and passed(report) and validation_safety['accepted']:
                     state['status'] = 'thresholds_met'
                 elif round_id == limit:

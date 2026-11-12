@@ -68,7 +68,7 @@ def usage_row(event):
 class UsageLogger:
     def __init__(self, directory):
         self.store = Store(directory)
-        root = self.store.directory.parent if self.store.directory.name in ('self_instruct', 'development_generation') else self.store.directory
+        root = self.store.directory.parent if self.store.directory.name in ('self_instruct', 'development_generation', 'benchmark_judging') else self.store.directory
         identity = root / 'api_usage_run.json'
         if not identity.exists():
             atomic_json(identity, {'run_id': str(uuid.uuid4())})

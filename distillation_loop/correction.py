@@ -115,6 +115,31 @@ def curriculum_feedback(results):
             for task, count in sorted(totals.items())}
 
 
+def balanced_selection(pairs, count, initial=(), checked_required=0, per_task_limit=None):
+    """Allocate slots by task exposure, preserving the candidate order within a task."""
+    totals = Counter(record['task'] for record, _ in initial)
+    queues = defaultdict(list)
+    for pair in pairs:
+        queues[pair[0]['task']].append(pair)
+    selected, added = [], Counter()
+    for _ in range(min(count, len(pairs))):
+        available = {task: queue for task, queue in queues.items() if queue and
+                     (per_task_limit is None or added[task] < per_task_limit)}
+        if not available:
+            break
+        options = [(task, i) for task, queue in available.items() for i, pair in enumerate(queue)
+                   if pair[0].get('answer_checks')] if checked_required > 0 else []
+        if not options:
+            options = [(task, 0) for task in available]
+        task, index = min(options, key=lambda option: totals[option[0]])
+        pair = queues[task].pop(index)
+        totals[task] += 1
+        added[task] += 1
+        checked_required -= bool(pair[0].get('answer_checks'))
+        selected.append(pair)
+    return selected
+
+
 def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pairs, predict):
     """Screen a bounded pool and carry accepted targets forward without re-editing."""
     total = config['scenarios_per_round']
@@ -128,16 +153,27 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
     results = {}
     pool_start = state.get('adaptive_pool_target', 0)
     required = max(0, math.ceil((len(previous_pairs) + total) * rate) - prior_checked)
+    balanced = config.get('balanced_curriculum', False)
     general_pairs = []
     if general_count:
         print(f'Generating and verifying {general_count} general pairs.', flush=True)
         feedback = getattr(data.pipeline, 'training_candidate_feedback', {})
         data.pipeline.training_candidate_feedback = {}
         try:
+            general_weights = dict.fromkeys(data.pipeline.schemas, 1) if balanced else data.base_weights
             for attempt in range(1, 4):
                 general_target = pool_start + general_count * attempt
-                pool = data.verified_pairs(general_target, data.base_weights)
+                pool = data.verified_pairs(general_target, general_weights)
                 fresh = [(record, answer) for record, answer in pool if record['id'] not in seen]
+                if balanced:
+                    general_pairs = balanced_selection(fresh, general_count, checked_required=required)
+                    counts = Counter(record['task'] for record, _ in general_pairs)
+                    if len(general_pairs) == general_count and all(counts[t] >= 4 for t in data.pipeline.schemas):
+                        seen.update(record['id'] for record, _ in general_pairs)
+                        break
+                    general_weights = {task: 3 if counts[task] < 4 else 1
+                                       for task in data.pipeline.schemas}
+                    continue
                 if len(fresh) >= general_count:
                     # Preserve checked templates for the round-wide coverage requirement.
                     fresh.sort(key=lambda pair: not bool(pair[0].get('answer_checks')))
@@ -145,7 +181,7 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
                     seen.update(record['id'] for record, _ in fresh)
                     break
             else:
-                raise ValueError(f'Only {len(fresh)} verified general targets; require {general_count}')
+                raise ValueError(f'Insufficient general target coverage for {general_count} slots; inspect generation logs')
         finally:
             data.pipeline.training_candidate_feedback = feedback
         pool_start = general_target
@@ -173,14 +209,29 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
         selected = checked[:min(count, required)]
         selected_ids = {r['scenario']['id'] for r in selected}
         selected.extend([r for r in accepted if r['scenario']['id'] not in selected_ids][:count - len(selected)])
-        if len(selected) == count and len(checked) >= required:
+        if balanced:
+            chosen = balanced_selection([(r['scenario'], r['reference']) for r in accepted],
+                                        count, initial=general_pairs, checked_required=required,
+                                        per_task_limit=3 * math.ceil(count / len(data.pipeline.schemas)))
+            selected = [results[record['id']] for record, _ in chosen]
+        if len(selected) == count and sum(bool(r['scenario'].get('answer_checks')) for r in selected) >= required:
             break
+    if balanced and len(selected) != count:
+        raise ValueError(f'Only {len(selected)} verified adaptive targets; require {count}')
     feedback = curriculum_feedback(results.values())
     diagnostics = {'screened_candidate_ids': sorted(seen), 'adaptive_pool_target': pool_target,
                    'curriculum_feedback': feedback}
     if general_count:
         diagnostics['training_mix'] = {'general': len(general_pairs), 'adaptive': len(selected),
                                        'used_prior_feedback': bool(data.pipeline.training_candidate_feedback)}
+    if config.get('preference_training'):
+        diagnostics['preference_pairs'] = [
+            {'scenario_id': r['scenario']['id'], 'rejected': clean_response(r['prediction']['raw'], False)}
+            for r in selected if r['assessment']['verdict'] == 'needs_correction'
+            and set(r['assessment']['error_categories']) - {'response_format'}
+            and not r['prediction']['truncated']
+            and clean_response(r['prediction']['raw'], False) != r['reference']
+        ]
     atomic_json(directory / 'candidate_feedback.json', diagnostics)
     if len(selected) + len(general_pairs) < minimum:
         raise ValueError(f'Only {len(selected) + len(general_pairs)} verified targets after screening {len(results)} candidates; require {minimum}')

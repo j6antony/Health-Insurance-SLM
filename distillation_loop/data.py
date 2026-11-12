@@ -109,6 +109,7 @@ class CurriculumData:
         self.owns_lock=False
         self.deterministic_fraction = 0.0
         self.export_reference_pairs = True
+        self.expanded_templates = False
 
     def open(self):
         self.lock=self.pipeline.store.lock()
@@ -130,7 +131,7 @@ class CurriculumData:
     def verified_pairs(self, target, weights):
         from .trusted_templates import template_pairs
         count = math.ceil(target * self.deterministic_fraction)
-        templates = template_pairs(count, self.pipeline.schemas, self.pipeline.exclusions) if count else []
+        templates = template_pairs(count, self.pipeline.schemas, self.pipeline.exclusions, expanded=self.expanded_templates) if count else []
         self.pipeline.scheduler.weights = weights
         silver_target = target - len(templates)
         if silver_target:

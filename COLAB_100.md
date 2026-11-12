@@ -108,3 +108,23 @@ Keep the same run folder. In the training cell, increase `API_MAX_CALLS` or
 `API_MAX_COST_USD` as indicated by the error, then rerun that cell. These caps
 are cumulative. Requests and costs already recorded still count against the new
 limits. The notebook resumes from the state and checkpoints already on disk.
+
+## Five-round balanced profile
+
+Use `distillation_colab_1000.ipynb` for 200 new pairs per round over five rounds.
+Each round selects 120 general and 80 adaptive pairs, with at least four fresh
+general examples per task. Development uses 20 cases per task. The final holdout
+reserves whole source families. Schema and evidence validity, review flags,
+and evidence overlap are reported alongside task correctness. The semantic
+judge uses the teacher API for open-ended answers and shares the run budget.
+
+The default starts a fresh rank-16 adapter. SFT uses new pairs and up to 30
+task-balanced pairs from accepted rounds. ORPO follows SFT when a verified
+teacher answer beats a complete student answer on a substantive issue.
+A round that fails the regression gate stays in history and the next round
+continues from the best accepted checkpoint. The run uses a new Drive folder.
+
+To regrade earlier runs, call `distillation_loop.semantic.regrade_saved_run`
+with the old run directory, its saved development JSONL, and a configured
+`SemanticJudge`. The function validates the original split and writes paired
+comparisons under `regraded/`.

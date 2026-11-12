@@ -226,7 +226,7 @@ def train_tokenized(runtime, examples, output_dir):
             num_train_epochs=cfg['epochs_per_round'],
             max_steps=min(cfg['max_steps_per_round'],
                           math.ceil(len(examples) / effective_batch_size) * cfg['epochs_per_round']),
-            learning_rate=cfg['learning_rate'], max_length=cfg['max_sequence_length'],
+            learning_rate=cfg['learning_rate'], lr_scheduler_type=cfg.get('lr_scheduler_type', 'linear'), max_length=cfg['max_sequence_length'],
             completion_only_loss=True, packing=False,
             dataset_kwargs={'skip_prepare_dataset': True},
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},

@@ -189,6 +189,9 @@ def load_loop_config(path='config/distillation_loop.json'):
         raise ValueError('Invalid LoRA dropout')
     if type(t['replay_previous_rounds']) is not bool:
         raise ValueError('replay_previous_rounds must be boolean')
+    replay = t.get('replay_fraction', 0)
+    if type(replay) not in (int, float) or not math.isfinite(replay) or not 0 <= replay <= 1:
+        raise ValueError('Training replay_fraction must be finite in [0, 1]')
     train_batch_size = value['training'].get('per_device_train_batch_size', 1)
     if type(train_batch_size) is not int or train_batch_size < 1:
         raise ValueError('Training per_device_train_batch_size must be a positive integer')

@@ -80,14 +80,67 @@ def template_pair(index):
     return record, response
 
 
-def template_pairs(count, schemas, exclusions):
+def structured_template_pair(index):
+    task = ('document_classification', 'field_extraction', 'claim_scrubbing')[index % 3]
+    case = index // 3
+    if task == 'document_classification':
+        heading, label = (
+            ('Itemized hospital bill', 'hospital_bill'),
+            ('Discharge summary', 'discharge_summary'),
+            ('Medication prescription', 'prescription'),
+            ('Laboratory investigation report', 'investigation_report'),
+            ('Insurance claim form', 'claim_form'),
+        )[case % 5]
+        source = f'{heading} | Synthetic record {case}'
+        instruction = 'Classify this document using the heading and the supplied taxonomy.'
+        answer = {'document_type': label, 'evidence': [heading], 'requires_review': False}
+        checked = {'document_type': label, 'requires_review': False}
+    elif task == 'field_extraction':
+        identifier = f'POL-{case:05d}'
+        source = f'Policy number: {identifier}. Synthetic intake record {case}.'
+        instruction = 'Extract the policy number only and cite its source.'
+        answer = {'fields': [{'field_name': 'policy_number', 'value': identifier,
+                             'evidence': identifier, 'page_number': 1, 'requires_review': False}]}
+        checked = {}
+    else:
+        signature, date = bool(case & 1), bool(case & 2)
+        complete = signature and date
+        source = (f'Synthetic intake checklist {case}. Signature present: {signature}. '
+                  f'Service date present: {date}. Review is required unless both are present.')
+        missing = [name for name, present in [('Signature', signature), ('Service date', date)] if not present]
+        instruction = 'Apply the supplied checklist and identify any missing items.'
+        answer = {'answer': 'Checklist complete.' if complete else 'Checklist incomplete.',
+                  'missing_information': missing, 'issues': missing,
+                  'requires_review': not complete, 'evidence': [{'document_id': 'RULE', 'quote': source}]}
+        checked = {'missing_information': missing, 'issues': missing}
+    rules = [{'path': [key], 'operation': 'equals', 'operands': [value]} for key, value in checked.items()]
+    if task == 'claim_scrubbing':
+        rules.append({'path': ['requires_review'], 'operation': 'any', 'operands': [not signature, not date]})
+    if task == 'field_extraction':
+        rules.extend({'path': ['fields', 0, key], 'operation': 'equals', 'operands': [value]}
+                     for key, value in answer['fields'][0].items() if key != 'evidence')
+    record = {'id': f'fictional-structured-v1-{index}', 'task': task, 'instruction': instruction,
+              'scenario': {'synthetic': True, 'documents': [{'document_id': 'RULE', 'page_number': 1, 'text': source}],
+                           'context': {}},
+              'case_type': 'conditional', 'difficulty': 'medium', 'verification_basis': 'fictional-structured-v1',
+              'template_family': task, 'reasoning_variant': str(case % 5), 'answer_checks': rules}
+    return record, answer
+
+
+def template_pairs(count, schemas, exclusions, *, expanded=False):
     # Bound scanning if held-out data happen to exclude a complete template family.
     dedup = Deduplicator(exclusions)
     pairs = []
     for index in range(max(100, count * 20)):
         if len(pairs) == count:
             break
-        record, answer = template_pair(index)
+        if expanded:
+            record, answer = (template_pair if index % 2 == 0 else structured_template_pair)(index // 2)
+        else:
+            record, answer = template_pair(index)
+        if expanded and record['task'] == 'appeals_process_qa':
+            answer['answer'] = answer['answer'].replace('fictional exercise deadline', 'deadline')
+            record['answer_checks'][0]['operands'] = [answer['answer']]
         if dedup.check(record):
             continue
         validate_answer(record, answer, schemas[record['task']])
