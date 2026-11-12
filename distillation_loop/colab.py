@@ -32,12 +32,13 @@ def distillation_1000_configs(parent_config, loop_config, run_dir):
     parent, config = colab_configs(parent_config, loop_config, run_dir)
     config.update(max_rounds=5, scenarios_per_round=200, adaptive_pairs_per_round=80,
                   student_conditioned_training=True, stop_when_thresholds_met=False,
-                  balanced_curriculum=True, rollback_on_regression=True, preference_training=True,
+                  balanced_curriculum=True, stratified_screening=True, rollback_on_regression=True, preference_training=True,
                   development_examples_per_task=20, feedback_strength=2.0)
     config['evaluation'].update(holdout_families_per_task=2, total_examples=360,
                                 semantic_judge=True)
     config['training'].update(max_steps_per_round=100, learning_rate=3e-5,
-                              lora_rank=16, lora_alpha=32, replay_previous_rounds=False,
+                              lora_rank=32, lora_alpha=32, lora_dropout=0.0, use_rslora=True,
+                              evidence_first=True, weight_decay=.01, replay_previous_rounds=False,
                               replay_fraction=.15, lr_scheduler_type='cosine')
     config['quality'].update(max_task_regression=.05, minimum_deterministic_check_rate=.15,
                              deterministic_template_fraction=.20)
@@ -112,7 +113,7 @@ class UnslothStudentRuntime(StudentRuntime):
         set_seed(config['random_seed'])
         model = FastLanguageModel.get_peft_model(
             model, r=cfg['lora_rank'], lora_alpha=cfg['lora_alpha'],
-            lora_dropout=cfg['lora_dropout'], bias='none',
+            lora_dropout=cfg['lora_dropout'], use_rslora=cfg.get('use_rslora', False), bias='none',
             target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj',
                             'gate_proj', 'up_proj', 'down_proj'],
             use_gradient_checkpointing='unsloth', random_state=config['random_seed'],
@@ -141,7 +142,7 @@ class UnslothStudentRuntime(StudentRuntime):
         from datasets import Dataset
         from trl import ORPOConfig, ORPOTrainer
         from self_instruct_pipeline.prompt_builder import target_payload
-        from .student import clear_cuda_cache, render_prompt, tokenize_teacher_pair
+        from .student import clear_cuda_cache, evidence_first_payload, ordered_answer, render_prompt, tokenize_teacher_pair
 
         cfg = self.config['training']
         rejected = {row['scenario_id']: row['rejected'] for row in preferences}
@@ -151,6 +152,9 @@ class UnslothStudentRuntime(StudentRuntime):
                 continue
             payload = target_payload(record, schemas)
             bad = rejected[record['id']]
+            if cfg.get('evidence_first'):
+                payload = evidence_first_payload(payload)
+                answer = ordered_answer(answer)
             # Leave room for the boundary and special tokens added by TRL.
             limit = cfg['max_sequence_length'] - 4
             try:
@@ -174,7 +178,7 @@ class UnslothStudentRuntime(StudentRuntime):
                 per_device_train_batch_size=1, gradient_accumulation_steps=4,
                 num_train_epochs=1, lr_scheduler_type='cosine', fp16=True, bf16=False,
                 gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
-                optim='adamw_torch', report_to='none', save_strategy='no',
+                optim='adamw_torch', weight_decay=cfg.get('weight_decay', 0.0), report_to='none', save_strategy='no',
                 seed=self.config['random_seed'])
             trainer = ORPOTrainer(model=self.model, args=args, train_dataset=Dataset.from_list(rows),
                                   processing_class=self.tokenizer)

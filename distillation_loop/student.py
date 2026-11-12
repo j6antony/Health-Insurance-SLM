@@ -44,6 +44,23 @@ def infer_payloads(runtime, payloads):
     return [runtime.infer(p) for p in payloads]
 
 
+EVIDENCE_FIRST_KEYS = ('evidence', 'missing_information', 'issues', 'criteria_assessment',
+                       'requires_review', 'suggested_codes', 'document_type', 'fields', 'draft', 'answer')
+
+
+def ordered_answer(answer):
+    return {key: answer[key] for key in dict.fromkeys((*EVIDENCE_FIRST_KEYS, *answer)) if key in answer}
+
+
+def evidence_first_payload(payload):
+    schema = payload['response_schema']
+    properties = ordered_answer(schema['properties'])
+    return {**payload, 'instruction': payload['instruction'] +
+            '\nReturn JSON with the top-level fields in this order: ' + ', '.join(properties) + '.',
+            'response_schema': {**schema, 'properties': properties,
+                                'required': [key for key in properties if key in schema['required']]}}
+
+
 def render_prompt(tokenizer, payload):
     return tokenizer.apply_chat_template(
         [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
@@ -135,6 +152,8 @@ class StudentRuntime:
         if type(batch_size) is not int or batch_size < 1:
             raise ValueError('batch_size must be a positive integer')
         results = [None] * len(payloads)
+        if self.config['training'].get('evidence_first'):
+            payloads = [evidence_first_payload(payload) for payload in payloads]
         texts = [render_prompt(self.tokenizer, p) for p in payloads]
         lengths = [len(self.tokenizer(t, add_special_tokens=False)['input_ids']) for t in texts]
         valid = []
@@ -193,8 +212,12 @@ class StudentRuntime:
     def train(self, pairs, schemas, output_dir):
         self.prepare()
         cfg = self.config['training']
-        examples = [tokenize_teacher_pair(self.tokenizer, target_payload(r, schemas), answer,
-                                         cfg['max_sequence_length']) for r, answer in pairs]
+        examples = []
+        for record, answer in pairs:
+            payload = target_payload(record, schemas)
+            if cfg.get('evidence_first'):
+                payload, answer = evidence_first_payload(payload), ordered_answer(answer)
+            examples.append(tokenize_teacher_pair(self.tokenizer, payload, answer, cfg['max_sequence_length']))
         if not examples:
             raise ValueError('No accepted teacher targets for training')
         return train_tokenized(self, examples, output_dir)
@@ -231,7 +254,7 @@ def train_tokenized(runtime, examples, output_dir):
             dataset_kwargs={'skip_prepare_dataset': True},
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
             ddp_find_unused_parameters=False, ddp_timeout=300,
-            fp16=True, bf16=False, optim='adamw_torch', report_to='none',
+            fp16=True, bf16=False, optim='adamw_torch', weight_decay=cfg.get('weight_decay', 0.0), report_to='none',
             save_strategy='no', eval_strategy='no', logging_steps=1,
             seed=runtime.config['random_seed'], remove_unused_columns=False)
         if args.n_gpu != 1 or args.world_size != world_size:

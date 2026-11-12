@@ -118,7 +118,7 @@ reserves whole source families. Schema and evidence validity, review flags,
 and evidence overlap are reported alongside task correctness. The semantic
 judge uses the teacher API for open-ended answers and shares the run budget.
 
-The default starts a fresh rank-16 adapter. SFT uses new pairs and up to 30
+The default starts a fresh rank-32 rsLoRA adapter. SFT uses new pairs and up to 30
 task-balanced pairs from accepted rounds. ORPO follows SFT when a verified
 teacher answer beats a complete student answer on a substantive issue.
 A round that fails the regression gate stays in history and the next round
@@ -128,3 +128,7 @@ To regrade earlier runs, call `distillation_loop.semantic.regrade_saved_run`
 with the old run directory, its saved development JSONL, and a configured
 `SemanticJudge`. The function validates the original split and writes paired
 comparisons under `regraded/`.
+
+The adaptive screen reserves two candidates per task before allocating extra slots.
+The student emits evidence before the conclusion, and deterministic cases use
+synthetic records such as provider statements, remittances, and plan addenda.

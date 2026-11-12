@@ -220,3 +220,24 @@ class MixedCurriculumTests(unittest.TestCase):
         self.assertEqual(len({record['id'] for record, _ in pairs}), 100)
         self.assertNotIn('60', {record['id'] for record, _ in pairs})
         self.assertEqual(diagnostics['training_mix']['adaptive'], 40)
+
+    def test_stratified_screening_refuses_to_skip_a_task(self):
+        tasks = [f'task_{i}' for i in range(18)]
+        pipeline = SimpleNamespace(schemas=dict.fromkeys(tasks), training_candidate_feedback={})
+
+        def generate(target, weights):
+            return [({'id': str(i), 'task': tasks[i % 18] if i < 120 else tasks[i % 6]}, {})
+                    for i in range(target)]
+
+        def assess(pipeline, record, reference, prediction, directory, checkpoint):
+            return {'scenario': record, 'reference': reference, 'status': 'accepted',
+                    'assessment': {'verdict': 'correct'}}
+
+        data = SimpleNamespace(pipeline=pipeline, base_weights={}, verified_pairs=generate)
+        config = {'scenarios_per_round': 200, 'adaptive_pairs_per_round': 80,
+                  'balanced_curriculum': True, 'stratified_screening': True}
+        with tempfile.TemporaryDirectory() as folder, patch(
+                'distillation_loop.correction.assess_candidate', side_effect=assess):
+            with self.assertRaisesRegex(ValueError, 'Adaptive screening floor not met'):
+                adaptive_pairs(data, None, Path(folder), {'last_checkpoint': 'prior'}, config, {}, [],
+                               lambda runtime, records, schemas, directory: {r['id']: {} for r in records})

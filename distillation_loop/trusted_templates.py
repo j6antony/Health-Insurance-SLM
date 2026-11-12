@@ -127,6 +127,49 @@ def structured_template_pair(index):
     return record, answer
 
 
+def contextual_template_pair(index):
+    record, answer = template_pair(index)
+    task = record['task']
+    context = record['scenario']['context']
+    case = index // 3
+    if task == 'patient_billing':
+        ledger = context['ledger']
+        documents = [
+            ('PROVIDER-STATEMENT', f'Patient accounts | Encounter SYN-{case}\nTotal charges: USD {ledger["billed"]}.'),
+            ('REMITTANCE', f'Remittance for SYN-{case}\nPlan payment: USD {ledger["paid"]}. Contractual adjustment: USD {ledger["adjustment"]}.'),
+            ('LEDGER-GUIDE', 'For this ledger, subtract the plan payment and contractual adjustment from total charges. The result is an accounting balance only.'),
+        ]
+        record['instruction'] = 'Reconcile the provider statement and remittance. Report the accounting balance in USD.'
+    elif task == 'appeals_process_qa':
+        documents = [
+            ('NOTICE', f'Appeals correspondence | File SYN-{case}\nNotice date: {context["start_date"]}.'),
+            ('PLAN-ADDENDUM', f'For this notice, the submission window closes {context["offset_days"]} calendar days after the notice date. The notice date is day zero. Weekends and holidays count.'),
+        ]
+        record['instruction'] = 'Calculate the submission deadline from the notice and the supplied plan addendum. Use ISO date format.'
+        answer['answer'] = answer['answer'].replace('fictional exercise deadline', 'submission deadline')
+    else:
+        weeks = 8 if context['criterion_A'] else 4
+        authorization = 'attached and signed' if context['criterion_B'] else 'not supplied'
+        relationship = 'both requirements' if context['relationship'] == 'AND' else 'at least one requirement'
+        documents = [
+            ('PLAN-EXCERPT', f'For this sample plan’s documentation checklist, {relationship} must be satisfied. The requirements are six completed therapy weeks and a signed referral.'),
+            ('THERAPY-SUMMARY', f'Rehabilitation progress summary | File SYN-{case}\nCompleted therapy: {weeks} weeks.'),
+            ('REFERRAL-LOG', f'Intake referral log | File SYN-{case}\nReferral status: {authorization}.'),
+        ]
+        record['instruction'] = 'Apply the documentation checklist to the submitted records. State whether the checklist is satisfied and explain each requirement.'
+        met = context['criterion_A'] and context['criterion_B'] if context['relationship'] == 'AND' else context['criterion_A'] or context['criterion_B']
+        answer['answer'] = f'The documentation checklist is {"satisfied" if met else "not satisfied"}.'
+        answer['criteria_assessment'] = [f'Completed therapy: {weeks} weeks. Signed referral: {authorization}.']
+    record['id'] = f'contextual-rules-v1-{index}'
+    record['verification_basis'] = 'contextual-rules-v1'
+    record['scenario'] = {'synthetic': True, 'context': {}, 'documents': [
+        {'document_id': name, 'page_number': 1, 'text': text} for name, text in documents]}
+    answer['evidence'] = [{'document_id': name, 'quote': text.split('\n')[-1]} for name, text in documents]
+    for rule in record['answer_checks']:
+        rule['operands'] = [answer[rule['path'][0]]]
+    return record, answer
+
+
 def template_pairs(count, schemas, exclusions, *, expanded=False):
     # Bound scanning if held-out data happen to exclude a complete template family.
     dedup = Deduplicator(exclusions)
@@ -135,12 +178,9 @@ def template_pairs(count, schemas, exclusions, *, expanded=False):
         if len(pairs) == count:
             break
         if expanded:
-            record, answer = (template_pair if index % 2 == 0 else structured_template_pair)(index // 2)
+            record, answer = (contextual_template_pair if index % 2 == 0 else structured_template_pair)(index // 2)
         else:
             record, answer = template_pair(index)
-        if expanded and record['task'] == 'appeals_process_qa':
-            answer['answer'] = answer['answer'].replace('fictional exercise deadline', 'deadline')
-            record['answer_checks'][0]['operands'] = [answer['answer']]
         if dedup.check(record):
             continue
         validate_answer(record, answer, schemas[record['task']])

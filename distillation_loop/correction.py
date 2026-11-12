@@ -186,11 +186,25 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
             data.pipeline.training_candidate_feedback = feedback
         pool_start = general_target
         required = max(0, required - sum(bool(record.get('answer_checks')) for record, _ in general_pairs))
+    screening_floor = 2 if config.get('stratified_screening') else 0
     print(f'Collecting {count} adaptive pairs with student screening.', flush=True)
     for attempt in range(1, 4):
         pool_target = pool_start + count * attempt
         pool = data.verified_pairs(pool_target, weights)
         pending = [(record, reference) for record, reference in pool if record['id'] not in seen]
+        if screening_floor:
+            screened = Counter(r['scenario']['task'] for r in results.values())
+            deficits = {task: max(0, screening_floor - screened[task]) for task in data.pipeline.schemas}
+            reserved = []
+            for pair in pending:
+                task = pair[0]['task']
+                if deficits[task]:
+                    reserved.append(pair)
+                    deficits[task] -= 1
+            reserved_ids = {record['id'] for record, _ in reserved}
+            remaining = [pair for pair in pending if pair[0]['id'] not in reserved_ids]
+            pending = reserved + balanced_selection(remaining, count - len(reserved),
+                                                    initial=[(r['scenario'], None) for r in results.values()] + reserved)
         print(f'Adaptive pass {attempt}/3: screening {len(pending)} new candidates.', flush=True)
         predictions = predict(runtime, [record for record, _ in pending],
                               data.pipeline.schemas, directory)
@@ -214,13 +228,20 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
                                         count, initial=general_pairs, checked_required=required,
                                         per_task_limit=3 * math.ceil(count / len(data.pipeline.schemas)))
             selected = [results[record['id']] for record, _ in chosen]
-        if len(selected) == count and sum(bool(r['scenario'].get('answer_checks')) for r in selected) >= required:
+        screened = Counter(r['scenario']['task'] for r in results.values())
+        missing_screening = {task: screening_floor - screened[task] for task in data.pipeline.schemas
+                             if screened[task] < screening_floor} if screening_floor else {}
+        if not missing_screening and len(selected) == count and sum(bool(r['scenario'].get('answer_checks')) for r in selected) >= required:
             break
+    if missing_screening:
+        raise ValueError(f'Adaptive screening floor not met; missing candidates by task: {missing_screening}')
     if balanced and len(selected) != count:
         raise ValueError(f'Only {len(selected)} verified adaptive targets; require {count}')
     feedback = curriculum_feedback(results.values())
     diagnostics = {'screened_candidate_ids': sorted(seen), 'adaptive_pool_target': pool_target,
                    'curriculum_feedback': feedback}
+    if screening_floor:
+        diagnostics['screened_per_task'] = dict(screened)
     if general_count:
         diagnostics['training_mix'] = {'general': len(general_pairs), 'adaptive': len(selected),
                                        'used_prior_feedback': bool(data.pipeline.training_candidate_feedback)}
