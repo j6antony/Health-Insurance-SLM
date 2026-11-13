@@ -47,6 +47,16 @@ class CorrectionTests(unittest.TestCase):
         self.assertEqual(result['reference'], target)
         self.assertEqual(teacher.calls, ['student_assessment'])
 
+    def test_defective_teacher_reference_is_quarantined(self):
+        record, target = template_pair(0)
+        prediction = {'raw': json.dumps(target), 'truncated': False}
+        teacher = Teacher({'verdict': 'reference_defective', 'error_categories': [],
+                           'findings': 'Reference is contradicted by the source.'})
+        with tempfile.TemporaryDirectory() as folder:
+            result = assess_candidate(teacher, record, target, prediction, folder, 'baseline')
+        self.assertEqual(result['status'], 'quarantined')
+        self.assertEqual(result['reason'], 'Reference is contradicted by the source.')
+
     def test_invalid_student_output_retains_reference_without_api_call(self):
         record, target = template_pair(0)
         for raw, truncated in (('{bad', False), ('{}', False), (json.dumps(target), True)):

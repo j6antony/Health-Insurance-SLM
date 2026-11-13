@@ -19,7 +19,7 @@ ASSESSMENT_SCHEMA = {
     'type': 'object',
     'required': ['verdict', 'error_categories', 'findings'],
     'properties': {
-        'verdict': {'type': 'string', 'enum': ['correct', 'needs_correction', 'unverifiable']},
+        'verdict': {'type': 'string', 'enum': ['correct', 'needs_correction', 'reference_defective', 'unverifiable']},
         'error_categories': {'type': 'array', 'items': {'type': 'string', 'enum': list(ERROR_CATEGORIES)}},
         'findings': {'type': 'string'},
     },
@@ -46,21 +46,21 @@ def assess_candidate(pipeline, record, reference, prediction, directory, checkpo
     saved = json.loads(path.read_text()) if path.exists() else {}
     if saved and saved['input_hash'] != key:
         raise ValueError('Saved correction belongs to different candidate inputs')
-    if saved.get('target_source') == 'verified_teacher_reference':
+    if saved.get('assessment_version') == 2:
         return saved
 
     result = {'input_hash': key, 'scenario': record, 'checkpoint': checkpoint,
               'reference': reference, 'prediction': prediction,
-              'target_source': 'verified_teacher_reference'}
+              'target_source': 'verified_teacher_reference', 'assessment_version': 2}
     try:
         validate_answer(record, reference, pipeline.schemas[record['task']])
     except ValidationError as exc:
         result.update(status='quarantined', reason=f'Invalid teacher reference: {exc}')
     else:
-        assessment = assess_draft(pipeline, record, reference, prediction, saved.get('assessment'))
+        assessment = assess_draft(pipeline, record, reference, prediction, None if saved.get('target_source') else saved.get('assessment'))
         result['assessment'] = assessment
-        if assessment['verdict'] == 'unverifiable':
-            result.update(status='quarantined', reason='Source evidence did not resolve the answer')
+        if assessment['verdict'] in ('unverifiable', 'reference_defective'):
+            result.update(status='quarantined', reason=assessment['findings'])
         else:
             result['status'] = 'accepted'
     atomic_json(path, result)
@@ -68,6 +68,9 @@ def assess_candidate(pipeline, record, reference, prediction, directory, checkpo
 
 
 def assess_draft(pipeline, record, reference, prediction, cached_assessment):
+    if prediction.get('error') == 'Prompt exceeds inference context budget':
+        return {'verdict': 'assessment_unavailable', 'error_categories': [],
+                'findings': prediction['error']}
     try:
         draft = clean_response(prediction['raw'], prediction['truncated'])
         validate_schema(draft, pipeline.schemas[record['task']])
@@ -82,13 +85,13 @@ def assess_draft(pipeline, record, reference, prediction, cached_assessment):
             assessment = ask(
                 pipeline, dict(payload, student_answer=draft, source_only_reference=reference),
                 'Assess the student answer against the original evidence and check the reference against '
-                'that evidence. Identify factual, evidence and schema errors. Accept valid paraphrases. '
+                'that evidence. Return reference_defective when the reference is materially wrong, even if the student is also wrong. Identify factual, evidence and schema errors. Accept valid paraphrases. '
                 'If the evidence cannot resolve material disagreement, return unverifiable.',
                 ASSESSMENT_SCHEMA, 'student_assessment')
         else:
             validate_schema(assessment, ASSESSMENT_SCHEMA)
         verdict = assessment['verdict']
-        if verdict != 'unverifiable' and bool(assessment['error_categories']) != (verdict == 'needs_correction'):
+        if verdict in ('correct', 'needs_correction') and bool(assessment['error_categories']) != (verdict == 'needs_correction'):
             raise ValidationError('Inconsistent correctness assessment')
         return assessment
     except (ValidationError, ParentError) as exc:
@@ -155,6 +158,19 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
     required = max(0, math.ceil((len(previous_pairs) + total) * rate) - prior_checked)
     balanced = config.get('balanced_curriculum', False)
     general_pairs = []
+    fits = getattr(runtime, 'training_pair_fits', None)
+    overlong = set()
+
+    def usable(pool):
+        pairs = []
+        for record, answer in pool:
+            if record['id'] in seen or record['id'] in overlong:
+                continue
+            if fits and not fits(record, answer, data.pipeline.schemas):
+                overlong.add(record['id'])
+            else:
+                pairs.append((record, answer))
+        return pairs
     if general_count:
         print(f'Generating and verifying {general_count} general pairs.', flush=True)
         feedback = getattr(data.pipeline, 'training_candidate_feedback', {})
@@ -164,7 +180,7 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
             for attempt in range(1, 4):
                 general_target = pool_start + general_count * attempt
                 pool = data.verified_pairs(general_target, general_weights)
-                fresh = [(record, answer) for record, answer in pool if record['id'] not in seen]
+                fresh = usable(pool)
                 if balanced:
                     general_pairs = balanced_selection(fresh, general_count, checked_required=required)
                     counts = Counter(record['task'] for record, _ in general_pairs)
@@ -191,7 +207,7 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
     for attempt in range(1, 4):
         pool_target = pool_start + count * attempt
         pool = data.verified_pairs(pool_target, weights)
-        pending = [(record, reference) for record, reference in pool if record['id'] not in seen]
+        pending = usable(pool)
         if screening_floor:
             screened = Counter(r['scenario']['task'] for r in results.values())
             deficits = {task: max(0, screening_floor - screened[task]) for task in data.pipeline.schemas}
@@ -233,6 +249,7 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
                              if screened[task] < screening_floor} if screening_floor else {}
         if not missing_screening and len(selected) == count and sum(bool(r['scenario'].get('answer_checks')) for r in selected) >= required:
             break
+    atomic_json(directory / 'length_filter.json', {'excluded_scenario_ids': sorted(overlong)})
     if missing_screening:
         raise ValueError(f'Adaptive screening floor not met; missing candidates by task: {missing_screening}')
     if balanced and len(selected) != count:

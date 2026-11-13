@@ -209,6 +209,16 @@ class StudentRuntime:
     def _set_training_mode(self):
         self.model.train()
 
+    def training_pair_fits(self, record, answer, schemas):
+        cfg = self.config['training']
+        payload = target_payload(record, schemas)
+        if cfg.get('evidence_first'):
+            payload, answer = evidence_first_payload(payload), ordered_answer(answer)
+        prefix = self.tokenizer(render_prompt(self.tokenizer, payload), add_special_tokens=False)['input_ids']
+        completion = self.tokenizer(json.dumps(answer, ensure_ascii=False), add_special_tokens=False)['input_ids']
+        return (len(prefix) + len(completion) + 1 <= cfg['max_sequence_length']
+                and len(prefix) + self.config['inference']['max_new_tokens'] <= cfg['max_sequence_length'])
+
     def train(self, pairs, schemas, output_dir):
         self.prepare()
         cfg = self.config['training']

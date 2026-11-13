@@ -119,9 +119,9 @@ and evidence overlap are reported alongside task correctness. The semantic
 judge uses the teacher API for open-ended answers and shares the run budget.
 
 The default starts a fresh rank-32 rsLoRA adapter. SFT uses new pairs and up to 30
-task-balanced pairs from accepted rounds. ORPO follows SFT when a verified
+task-balanced pairs from earlier rounds. ORPO follows SFT when a verified
 teacher answer beats a complete student answer on a substantive issue.
-A round that fails the regression gate stays in history and the next round
+A round with a statistically supported paired regression stays in history and the next round
 continues from the best accepted checkpoint. The run uses a new Drive folder.
 
 To regrade earlier runs, call `distillation_loop.semantic.regrade_saved_run`

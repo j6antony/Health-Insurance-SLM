@@ -83,6 +83,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
     quality = validate_quality_settings(config, schemas)
     adaptive = config.get('student_conditioned_training', False)
     stop_on_thresholds = config.get('stop_when_thresholds_met', True)
+    if config.get('preference_training') and not callable(getattr(runtime, 'train_preferences', None)):
+        raise ValueError('Preference training requires a runtime with train_preferences')
     if type(adaptive) is not bool:
         raise ValueError('student_conditioned_training must be a boolean')
 
@@ -296,16 +298,6 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
                 replay_fraction = config['training'].get('replay_fraction', 0)
                 if not config['training']['replay_previous_rounds']:
                     history_pairs = [pair for pair in pairs if pair[0]['id'] in previous]
-                    rejected_rounds = {entry['round'] for entry in state['history']
-                                       if not entry['regression_gate']['accepted']} if replay_fraction else set()
-                    if rejected_rounds:
-                        rejected_ids = set()
-                        for rejected_round in rejected_rounds:
-                            rows = json.loads((store.path(f'round_{rejected_round:02d}') /
-                                               'training_plan.json').read_text())['pairs']
-                            start = (rejected_round - 1) * config['scenarios_per_round']
-                            rejected_ids.update(row['record']['id'] for row in rows[start:start + config['scenarios_per_round']])
-                        history_pairs = [pair for pair in history_pairs if pair[0]['id'] not in rejected_ids]
                     replay = balanced_selection(list(reversed(history_pairs)),
                                                 math.floor(len(new_pairs) * replay_fraction), initial=new_pairs)
                     pairs = new_pairs + replay
@@ -360,7 +352,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapt
 
                 # Save only completed rounds. An interrupted round restarts from
                 # the previous completed adapter when this function is rerun.
-                state.update(diagnostics)
+                state.update({key: value for key, value in diagnostics.items() if key != 'preference_pairs'})
                 state.update(trained_scenario_ids=training_ids, completed_rounds=round_id, last_checkpoint=checkpoint, latest_report=report)
                 validation_safety = regression_gate(state['baseline_report'], report, quality)
                 state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report, 'regression_gate': validation_safety, 'coverage': coverage})

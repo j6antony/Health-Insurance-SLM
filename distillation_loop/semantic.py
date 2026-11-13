@@ -10,7 +10,7 @@ from .review import DIMENSIONS, grade_reviewed
 
 
 class SemanticJudge:
-    version = 'source-rubric-v1'
+    version = 'source-rubric-v2'
 
     def __init__(self, parent, directory, schemas):
         self.parent, self.store, self.schemas = parent, Store(directory), schemas
@@ -51,6 +51,8 @@ class SemanticJudge:
                 scores['review_flag_correct'] = set_f1(flags(answer), flags(reference))
             else:
                 scores['review_flag_correct'] = float(answer.get('requires_review') == reference.get('requires_review'))
+            if 'requires_review' in reference and not scores['review_flag_correct']:
+                scores.update(task_score=0.0, grading_basis='incorrect_review_flag')
             def cited_tokens(value):
                 entries = value.get('evidence', value.get('fields', []))
                 spans = [(entry.get('document_id', entry.get('page_number', '')),

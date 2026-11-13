@@ -40,7 +40,7 @@ def distillation_1000_configs(parent_config, loop_config, run_dir):
                               lora_rank=32, lora_alpha=32, lora_dropout=0.0, use_rslora=True,
                               evidence_first=True, weight_decay=.01, replay_previous_rounds=False,
                               replay_fraction=.15, lr_scheduler_type='cosine')
-    config['quality'].update(max_task_regression=.05, minimum_deterministic_check_rate=.15,
+    config['quality'].update(max_task_regression=.05, paired_regression_alpha=.05, minimum_deterministic_check_rate=.15,
                              deterministic_template_fraction=.20)
     parent['generation']['scenario_blueprints'] = True
     return parent, config
