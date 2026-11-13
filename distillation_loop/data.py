@@ -139,6 +139,47 @@ class CurriculumData:
         # Template IDs are stable; cumulative replay does not create extra unique data.
         return (templates + checked_pairs(self.pipeline)[:silver_target])[:target]
 
+    def screening_topup(self, deficits, eligible):
+        """Reuse verified candidates and request only tasks with a remaining gap."""
+        from self_instruct_pipeline.pipeline import GenerationExhausted
+
+        pipeline = self.pipeline
+        verified = checked_pairs(pipeline)
+        verified_ids = {record['id'] for record, _ in verified}
+        unanswered = {record['id'] for record in pipeline.accepted
+                      if record['task'] in deficits and record['id'] not in verified_ids}
+        if unanswered:
+            pipeline.answer(allow_partial=True, scenario_ids=unanswered)
+            verified = checked_pairs(pipeline)
+        cached = eligible(verified)
+        available = Counter(record['task'] for record, _ in cached)
+        needed = {task: count - available[task] for task, count in deficits.items()
+                  if count > available[task]}
+        if needed:
+            counts = Counter(record['task'] for record in pipeline.accepted)
+            # Include spare candidates for answer audit and context-length failures.
+            targets = {task: counts[task] + 2 * count for task, count in needed.items()}
+            previous_target = pipeline.config['generation']['target_accepted_scenarios']
+            existing = {record['id'] for record in pipeline.accepted}
+            pipeline.config['generation']['target_accepted_scenarios'] = (
+                len(existing) + sum(targets[task] - counts[task] for task in targets))
+            try:
+                try:
+                    pipeline.generate(task_targets=targets)
+                except GenerationExhausted:
+                    pass
+                cached_ids = {record['id'] for record, _ in cached}
+                candidate_ids = {record['id'] for record in pipeline.accepted
+                                 if record['task'] in needed and record['id'] not in cached_ids
+                                 and record['id'] not in existing}
+                if candidate_ids:
+                    pipeline.answer(allow_partial=True, scenario_ids=candidate_ids)
+            finally:
+                pipeline.config['generation']['target_accepted_scenarios'] = previous_target
+                pipeline.checkpoint()
+            cached = eligible(checked_pairs(pipeline))
+        return [pair for pair in cached if pair[0]['task'] in deficits]
+
     def answer_pairs(self):
         self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()
         return checked_pairs(self.pipeline)

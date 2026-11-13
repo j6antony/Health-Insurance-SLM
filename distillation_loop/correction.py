@@ -204,10 +204,16 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
         required = max(0, required - sum(bool(record.get('answer_checks')) for record, _ in general_pairs))
     screening_floor = 2 if config.get('stratified_screening') else 0
     print(f'Collecting {count} adaptive pairs with student screening.', flush=True)
-    for attempt in range(1, 4):
-        pool_target = pool_start + count * attempt
-        pool = data.verified_pairs(pool_target, weights)
-        pending = usable(pool)
+    topup = getattr(data, 'screening_topup', None)
+    for attempt in range(1, 7 if screening_floor and topup else 4):
+        if attempt <= 3:
+            pool_target = pool_start + count * attempt
+            pending = usable(data.verified_pairs(pool_target, weights))
+        elif missing_screening:
+            print(f'Targeted adaptive screening refill: {missing_screening}', flush=True)
+            pending = topup(missing_screening, usable)
+        else:
+            break
         if screening_floor:
             screened = Counter(r['scenario']['task'] for r in results.values())
             deficits = {task: max(0, screening_floor - screened[task]) for task in data.pipeline.schemas}
@@ -219,9 +225,9 @@ def adaptive_pairs(data, runtime, directory, state, config, weights, previous_pa
                     deficits[task] -= 1
             reserved_ids = {record['id'] for record, _ in reserved}
             remaining = [pair for pair in pending if pair[0]['id'] not in reserved_ids]
-            pending = reserved + balanced_selection(remaining, count - len(reserved),
+            pending = reserved if attempt > 3 else reserved + balanced_selection(remaining, count - len(reserved),
                                                     initial=[(r['scenario'], None) for r in results.values()] + reserved)
-        print(f'Adaptive pass {attempt}/3: screening {len(pending)} new candidates.', flush=True)
+        print(f'Adaptive pass {attempt}: screening {len(pending)} candidates.', flush=True)
         predictions = predict(runtime, [record for record, _ in pending],
                               data.pipeline.schemas, directory)
         for record, reference in pending:
