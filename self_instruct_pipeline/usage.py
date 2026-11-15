@@ -68,16 +68,23 @@ def usage_row(event):
 class UsageLogger:
     def __init__(self, directory):
         self.store = Store(directory)
-        root = self.store.directory.parent if self.store.directory.name in ('self_instruct', 'development_generation') else self.store.directory
-        identity = root / 'api_usage_run.json'
-        if not identity.exists():
-            atomic_json(identity, {'run_id': str(uuid.uuid4())})
-        self.run_id = json.loads(identity.read_text())['run_id']
+        root = self.store.directory.parent if self.store.directory.name in ('self_instruct', 'development_generation', 'benchmark_judging') else self.store.directory
+        self.run_lock = Store(root / '.api_usage_lock')
+        with self.run_lock.lock(blocking=True):
+            identity = root / 'api_usage_run.json'
+            if not identity.exists():
+                atomic_json(identity, {'run_id': str(uuid.uuid4())})
+            self.run_id = json.loads(identity.read_text())['run_id']
         self.source = str(self.store.directory.relative_to(root))
         from .usage_cloud import SupabaseLedger
         self.cloud = SupabaseLedger.from_environment()
         if self.cloud:
             self.cloud.check()  # Verify table access before the next paid API call.
+        with self.run_lock.lock(blocking=True):
+            self._initialize_journal()
+            self._sync_pending()
+
+    def _initialize_journal(self):
         # Freeze historical rows and assign stable IDs once, before any upload.
         events = self.store.read('api_usage.jsonl')
         changed = False
@@ -101,9 +108,12 @@ class UsageLogger:
             for event in self.store.read('api_usage.jsonl'):
                 writer.writerow(usage_row(event))
         temporary.replace(path)
-        self.sync_pending()
 
     def sync_pending(self):
+        with self.run_lock.lock(blocking=True):
+            return self._sync_pending()
+
+    def _sync_pending(self):
         if not self.cloud:
             return 0
         synced = {r['event_id'] for r in self.store.read('api_usage_synced.jsonl')
@@ -121,17 +131,23 @@ class UsageLogger:
                  'run_id': self.run_id, 'source': self.source,
                  'cost_origin': 'recorded_at_call', 'cost_recorded_at': now()}
         event['cost_snapshot'] = usage_row(event)
-        self.store.append('api_usage.jsonl', event)
-        with self.store.path('api_usage.csv').open('a', newline='', encoding='utf-8') as stream:
-            csv.DictWriter(stream, fieldnames=FIELDS).writerow(usage_row(event))
-            stream.flush()
-            os.fsync(stream.fileno())
-        self.sync_pending()
+        with self.run_lock.lock(blocking=True):
+            self.store.append('api_usage.jsonl', event)
+            with self.store.path('api_usage.csv').open('a', newline='', encoding='utf-8') as stream:
+                csv.DictWriter(stream, fieldnames=FIELDS).writerow(usage_row(event))
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._sync_pending()
 
 
 def export_usage(run_dir):
     """Combine generation folders into run_dir/api_usage.csv; safe to repeat."""
     run_dir = Path(run_dir)
+    with Store(run_dir / '.api_usage_lock').lock(blocking=True):
+        return _export_usage(run_dir)
+
+
+def _export_usage(run_dir):
     rows = []
     for journal in sorted(run_dir.rglob('api_usage.jsonl')):
         for event in Store(journal.parent).read(journal.name):

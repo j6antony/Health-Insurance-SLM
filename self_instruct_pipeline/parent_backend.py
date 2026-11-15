@@ -22,7 +22,8 @@ class JSONParent:
     NAME = "Parent"
 
     def __init__(self, settings, *, api_key=None, logger=None, opener=None, sleep=time.sleep):
-        self.settings = settings
+        self.settings = dict(settings)
+        self._budget = ACTIVE_BUDGET.get()
         self.model = settings['model']
         self._key = api_key or os.environ.get(settings['api_key_env'])
         if not self._key:
@@ -40,7 +41,10 @@ class JSONParent:
         return urllib.request.urlopen(request, timeout=timeout, context=self.context)
 
     def _request(self, suffix, body=None, operation='request'):
-        budget = ACTIVE_BUDGET.get()
+        active_budget = ACTIVE_BUDGET.get()
+        if self._budget is not None and active_budget is not None and active_budget is not self._budget:
+            raise ValueError('Parent client belongs to another API budget')
+        budget = self._budget or active_budget
         encoded = json.dumps(body).encode() if body is not None else None
         headers = {**self.auth_headers(), 'Content-Type': 'application/json'}
         request = urllib.request.Request(self.BASE + suffix, data=encoded, headers=headers,

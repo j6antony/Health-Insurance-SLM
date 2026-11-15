@@ -63,7 +63,7 @@ class Store:
         append_jsonl(self.path(name), record)
 
     @contextlib.contextmanager
-    def lock(self):
+    def lock(self, *, blocking=False):
         # Mounted Google Drive may not support flock; Colab keeps process locks
         # on its local filesystem while all run data stays on the mounted Drive.
         lock_root = os.environ.get('DISTILLATION_LOCAL_LOCK_DIR')
@@ -75,7 +75,7 @@ class Store:
             lock_path = self.path('.pipeline.lock')
         with lock_path.open('a') as lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise ValueError('Another pipeline process is using this output directory') from exc
             try:

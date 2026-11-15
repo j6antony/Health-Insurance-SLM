@@ -31,7 +31,8 @@ def colab_configs(parent_config, loop_config, run_dir):
 def distillation_1000_configs(parent_config, loop_config, run_dir):
     parent, config = colab_configs(parent_config, loop_config, run_dir)
     config.update(max_rounds=10, scenarios_per_round=100, adaptive_pairs_per_round=40,
-                  student_conditioned_training=True, stop_when_thresholds_met=False)
+                  student_conditioned_training=True, stop_when_thresholds_met=False,
+                  preference_training=False)
     config['evaluation']['holdout_families_per_task'] = 2
     # One full epoch on 1,000 pairs with four examples per optimizer update.
     config['training']['max_steps_per_round'] = 250

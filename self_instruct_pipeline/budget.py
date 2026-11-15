@@ -1,7 +1,8 @@
-"""Optional, persistent request budget for a single sequential notebook run."""
+"""Optional, persistent request budget for a single notebook run."""
 import contextlib
 import contextvars
 import json
+from threading import RLock
 from decimal import Decimal
 
 from .persistence import Store, atomic_json
@@ -40,6 +41,8 @@ class APIBudget:
         if not cost.is_finite() or cost <= 0:
             raise ValueError('max_cost_usd must be finite and positive')
         self.store = Store(directory)
+        self._mutex = RLock()
+        self._active = False
         self.limits = {'max_calls': max_calls, 'max_cost_usd': str(cost)}
 
     @contextlib.contextmanager
@@ -63,34 +66,52 @@ class APIBudget:
                     raise ValueError('Resuming with a budget increase cannot lower an existing limit')
                 self.state['limits'] = self.limits
                 atomic_json(path, self.state)
+            if not path.exists():
+                atomic_json(path, self.state)
             token = ACTIVE_BUDGET.set(self)
+            with self._mutex:
+                self._active = True
             try:
                 yield self
             finally:
+                with self._mutex:
+                    self._active = False
                 ACTIVE_BUDGET.reset(token)
 
     def reserve(self, settings, body):
         reservation = reservation_usd(settings, body)
-        accounted = Decimal(self.state['accounted_usd'])
-        if self.state['calls'] >= self.limits['max_calls']:
-            raise BudgetExceeded(f"API request limit reached ({self.state['calls']}/{self.limits['max_calls']}). "
-                                 'Raise the request limit to resume the same run.')
-        cost_limit = Decimal(self.limits['max_cost_usd'])
-        if accounted + reservation > cost_limit:
-            raise BudgetExceeded(f'API cost limit reached (${accounted:.4f} accounted + '
-                                 f'${reservation:.4f} reserved for the next request, limit ${cost_limit:.2f}). '
-                                 'Raise the cost limit to resume the same run.')
-        # Persist BEFORE sending: a crash or unknown response retains its allowance.
-        self.state['calls'] += 1
-        self.state['unknown_usage_calls'] += 1
-        self.state['accounted_usd'] = str(accounted + reservation)
-        atomic_json(self.store.path('state.json'), self.state)
-        return reservation
+        with self._mutex:
+            self._require_active()
+            accounted = Decimal(self.state['accounted_usd'])
+            if self.state['calls'] >= self.limits['max_calls']:
+                raise BudgetExceeded(f"API request limit reached ({self.state['calls']}/{self.limits['max_calls']}). "
+                                     'Raise the request limit to resume the same run.')
+            cost_limit = Decimal(self.limits['max_cost_usd'])
+            if accounted + reservation > cost_limit:
+                raise BudgetExceeded(f'API cost limit reached (${accounted:.4f} accounted + '
+                                     f'${reservation:.4f} reserved for the next request, limit ${cost_limit:.2f}). '
+                                     'Raise the cost limit to resume the same run.')
+            # Persist BEFORE sending: a crash or unknown response retains its allowance.
+            self._save_state({**self.state, 'calls': self.state['calls'] + 1,
+                              'unknown_usage_calls': self.state['unknown_usage_calls'] + 1,
+                              'accounted_usd': str(accounted + reservation)})
+            return reservation
 
     def settle(self, reservation, event):
         row = usage_row(event)
         if 'estimated_cost_usd' not in row:
             return  # Unknown failures retain the conservative reservation.
-        self.state['accounted_usd'] = str(Decimal(self.state['accounted_usd']) - reservation + Decimal(row['estimated_cost_usd']))
-        self.state['unknown_usage_calls'] -= 1
-        atomic_json(self.store.path('state.json'), self.state)
+        with self._mutex:
+            self._require_active()
+            self._save_state({**self.state,
+                              'accounted_usd': str(Decimal(self.state['accounted_usd']) - reservation
+                                                   + Decimal(row['estimated_cost_usd'])),
+                              'unknown_usage_calls': self.state['unknown_usage_calls'] - 1})
+
+    def _require_active(self):
+        if not self._active:
+            raise BudgetExceeded('API budget is inactive; no request can be reserved or settled')
+
+    def _save_state(self, state):
+        atomic_json(self.store.path('state.json'), state)
+        self.state = state

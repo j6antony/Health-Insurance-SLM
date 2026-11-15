@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from distillation_loop.core import load_loop_config
@@ -39,6 +40,30 @@ class BudgetTests(unittest.TestCase):
                 with self.assertRaises(BudgetExceeded):
                     OpenAIParent(settings, api_key='TEST', opener=opener).check_model()
             self.assertEqual(len(calls), 2)
+
+    def test_worker_threads_share_the_bound_request_limit(self):
+        calls = []
+        settings = load_config()['parent']
+
+        def opener(request, timeout):
+            calls.append(request)
+            return io.BytesIO(json.dumps({'id': settings['model']}).encode())
+
+        with tempfile.TemporaryDirectory() as folder:
+            with APIBudget(folder, max_calls=3).activate() as budget:
+                client = OpenAIParent(settings, api_key='TEST', opener=opener)
+                def check(_):
+                    try:
+                        client.check_model()
+                    except BudgetExceeded:
+                        return False
+                    return True
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    self.assertEqual(sum(workers.map(check, range(30))), 3)
+                self.assertEqual(budget.state['calls'], 3)
+            with self.assertRaisesRegex(BudgetExceeded, 'inactive'):
+                client.check_model()
+        self.assertEqual(len(calls), 3)
 
     def test_resume_raises_caps_without_resetting_accounting(self):
         settings = load_config()['parent']
