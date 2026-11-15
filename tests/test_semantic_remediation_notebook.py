@@ -37,11 +37,14 @@ class RemediationNotebookTests(unittest.TestCase):
             self.assertEqual(profile['overrides']['scenarios_per_round'], 200)
             self.assertEqual(profile['overrides']['adaptive_pairs_per_round'], 80)
             self.assertFalse(profile['overrides']['preference_training'])
+            self.assertIs(profile['require_semantic_decision'], False)
             self.assertEqual(profile['overrides']['quality']['minimum_new_pair_fraction'], 1.0)
         call, = [node for tree in trees for node in ast.walk(tree)
                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                  and node.func.id == 'run_loop']
         arguments = {keyword.arg: keyword.value for keyword in call.keywords}
         self.assertIs(ast.literal_eval(arguments['evaluate_release']), False)
-        self.assertEqual(arguments['continuation_authorized'].id, 'CONTINUATION_AUTHORIZED')
-        self.assertEqual(arguments['semantic_result'].id, 'SEMANTIC_RESULT')
+        self.assertNotIn('semantic_result', arguments)
+        launch = next(tree for tree in trees if call in ast.walk(tree))
+        with self.assertRaisesRegex(RuntimeError, 'Explicitly authorize'):
+            exec(compile(launch, str(notebook), 'exec'), {'CONTINUATION_AUTHORIZED': False})

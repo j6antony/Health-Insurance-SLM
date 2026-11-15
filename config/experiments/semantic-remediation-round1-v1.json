@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "status": "review_only_blocked_by_original_semantic_gate",
+  "status": "review_completed_experimental_launch_requires_explicit_authorization",
   "base_profile": "distillation_1000_configs",
   "model": "Qwen/Qwen3-8B",
   "quantization_bits": 4,
   "required_authorization": true,
-  "require_semantic_decision": true,
+  "require_semantic_decision": false,
   "overrides": {
     "max_rounds": 1,
     "scenarios_per_round": 200,

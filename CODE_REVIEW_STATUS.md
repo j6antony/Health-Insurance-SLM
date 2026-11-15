@@ -61,3 +61,8 @@ The dedicated `distillation_colab_semantic_remediation_round1.ipynb` loads the
 versioned experiment specification from the verified bundle. It requires all
 200 new verified pairs and leaves release scoring disabled. Launch requires a
 qualifying semantic result and explicit continuation authorization.
+
+The user reported independent review complete and authorized making the old
+diagnostic advisory for the dedicated one-round experiment. That notebook
+still requires explicit launch authorization. Candidate safety and rollback
+are enforced by the existing controller.
