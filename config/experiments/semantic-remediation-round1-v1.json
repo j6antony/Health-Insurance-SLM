@@ -14,6 +14,9 @@
     "training": {
       "use_rslora": true,
       "replay_previous_rounds": false
+    },
+    "quality": {
+      "minimum_new_pair_fraction": 1.0
     }
   },
   "development_cases": 360,

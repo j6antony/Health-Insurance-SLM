@@ -56,3 +56,8 @@ judge false positives, one possible rubric issue and nine second-review cases.
 The 200 selected historical pairs passed the frozen split exclusion check.
 Review the audit, root cause analysis, and blocked one-round design in `reports/`
 and `config/experiments/`. The original diagnostic still blocks continuation.
+
+The dedicated `distillation_colab_semantic_remediation_round1.ipynb` loads the
+versioned experiment specification from the verified bundle. It requires all
+200 new verified pairs and leaves release scoring disabled. Launch requires a
+qualifying semantic result and explicit continuation authorization.
