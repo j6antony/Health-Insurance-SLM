@@ -28,6 +28,22 @@ def report(score,valid=1.0):
             'examples_per_task':{t:3 for t in SCHEMAS}}
 
 
+def with_safety_evidence(summary):
+    if 'case_scores' in summary:
+        return summary
+    count = sum(summary['examples_per_task'].values())
+    valid = round(summary['schema_evidence_valid_rate'] * count)
+    cases = {}
+    for task, size in summary['examples_per_task'].items():
+        for i in range(size):
+            cases[f'{task}/{i}'] = {'task': task, 'score': summary['per_task'][task],
+                                   'valid': len(cases) < valid, 'incomplete': False,
+                                   'unsupported_claims': False, 'missed_required_review': False}
+    return {**summary, 'case_scores': cases, 'benchmark_hash': 'test-benchmark',
+            'scoring': 'test-scoring', 'evaluation_protocol': 'test-protocol',
+            'adapter_sha256': 'test-only-adapter-evidence'}
+
+
 class FakeTokenizer:
     eos_token_id=9
     def apply_chat_template(self,messages,**kwargs):
@@ -44,8 +60,13 @@ class FakeRuntime:
     def identity(self):return {'model_name':'fake-student','model_revision':'test-revision'}
     def save_checkpoint(self,path):
         Path(path).mkdir(parents=True,exist_ok=True)
+        (Path(path) / 'adapter_config.json').write_text('{}')
+        (Path(path) / 'adapter_model.safetensors').write_bytes(b'test fixture weights')
         return str(path)
-    def restore(self,path):self.restores.append(str(path))
+    def restore(self,path):
+        from distillation_loop.adapter_identity import checkpoint_binding
+        self.restores.append(str(path))
+        self.restored_adapter = checkpoint_binding(path) if Path(path).is_dir() else None
     def infer(self,payload):
         self.inferences.append(payload)
         return {'raw':'```json\n{"document_type":"hospital_bill","evidence":["Synthetic hospital invoice"],"requires_review":false}\n```',
@@ -63,7 +84,7 @@ class FakeEvaluator:
     def evaluate(self,development,output_dir):
         self.calls+=1
         if self.calls==self.fail_at:raise RuntimeError('simulated evaluation interruption')
-        return report(self.scores[min(self.calls-1,len(self.scores)-1)])
+        return with_safety_evidence(report(self.scores[min(self.calls-1,len(self.scores)-1)]))
 
 
 class FakeCurriculum:
@@ -155,7 +176,9 @@ class ControllerTests(unittest.TestCase):
     def run_loop(self,runtime,evaluator, **kwargs):
         def data(*args):
             obj=FakeCurriculum(*args);self.data_objects.append(obj);return obj
-        with patch('distillation_loop.controller.LightevalEvaluator', return_value=evaluator), \
+        evaluate = evaluator.evaluate
+        with patch.object(evaluator, 'evaluate', side_effect=lambda *args: with_safety_evidence(evaluate(*args))), \
+             patch('distillation_loop.controller.LightevalEvaluator', return_value=evaluator), \
              patch('distillation_loop.controller.frozen_development', return_value=self.development), \
              patch('distillation_loop.controller.CurriculumData', side_effect=data):
             return run_loop(runtime, self.base, self.config, **kwargs)
@@ -233,13 +256,16 @@ class ControllerTests(unittest.TestCase):
         from distillation_loop.kaggle_backup import AdapterBackupError
         self.config['max_rounds'] = 1
         runtime = FakeRuntime(); evaluator = FakeEvaluator([.1, .95])
-        with patch('distillation_loop.controller.save_adapter_dataset', side_effect=AdapterBackupError('upload failed')):
-            with self.assertRaises(AdapterBackupError): self.run_loop(runtime, evaluator)
-        self.assertEqual(len(runtime.trains), 1)
-        self.assertTrue((Path(self.tmp.name)/'round_01/training_complete.json').exists())
-        with patch('distillation_loop.controller.save_adapter_dataset') as backup:
-            result = self.run_loop(runtime, evaluator)
-            backup.assert_called_once()
+        with patch('distillation_loop.controller.backup_destination', return_value='kaggle'), \
+                patch('distillation_loop.controller.check_backup_setup'):
+            with patch('distillation_loop.controller.save_adapter_dataset', side_effect=AdapterBackupError('upload failed')):
+                with self.assertRaises(AdapterBackupError):
+                    self.run_loop(runtime, evaluator)
+            self.assertEqual(len(runtime.trains), 1)
+            self.assertTrue((Path(self.tmp.name)/'round_01/training_complete.json').exists())
+            with patch('distillation_loop.controller.save_adapter_dataset') as backup:
+                result = self.run_loop(runtime, evaluator)
+                backup.assert_called_once()
         self.assertEqual(len(runtime.trains), 1)
         self.assertEqual(result['completed_rounds'], 1)
 
@@ -249,7 +275,8 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'training interruption'):self.run_loop(runtime,evaluator)
         result=self.run_loop(runtime,evaluator)
         self.assertEqual(len(runtime.trains),2)
-        self.assertIn('initial_adapter',runtime.restores[-2])
+        self.assertEqual(runtime.restores[-3], result['initial_checkpoint'])
+        self.assertEqual(runtime.restores[-2], result['latest_checkpoint'])
         self.assertEqual(result['completed_rounds'],1)
         self.assertTrue(all(obj.closed for obj in self.data_objects))
 

@@ -30,6 +30,8 @@ def main():
     runtime.prepare()
     if job['adapter']:
         runtime.restore(job['adapter'])
+        if runtime.restored_adapter != tuple(job['adapter_binding'] or ()):
+            raise ValueError('GPU worker loaded a different adapter identity')
     if job['operation'] == 'initialize':
         if rank == 0:
             runtime.save_checkpoint(job['checkpoint'])

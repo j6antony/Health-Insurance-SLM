@@ -9,6 +9,7 @@ from self_instruct_pipeline.config import resolve_path
 from self_instruct_pipeline.persistence import Store, atomic_json, digest, read_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
 from self_instruct_pipeline.validation import ValidationError, validate_answer
+from .adapter_identity import adapter_files, checkpoint_binding
 from .core import ResponseError, clean_response, feedback_weights, satisfactory, validate_report
 from .correction import adaptive_pairs, balanced_selection
 from .data import CurriculumData, frozen_development
@@ -63,6 +64,37 @@ def save_predictions(runtime, records, schemas, directory, *, checkpoint=None):
     return existing
 
 
+def backup_destination():
+    configured = [destination for destination, enabled in (
+        ('drive', os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1'),
+        ('github', os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1'),
+        ('kaggle', bool(os.environ.get('KAGGLE_ADAPTER_DATASET', '').strip())),
+    ) if enabled]
+    if len(configured) > 1:
+        raise ValueError('Configure only one adapter backup destination')
+    return configured[0] if configured else None
+
+
+def backup_adapter(destination, checkpoint, run_dir, round_id, *, experimental):
+    if destination == 'drive':
+        from .drive_backup import save_drive_adapter
+        save_drive_adapter(checkpoint, run_dir, round_id, require_mounted=True)
+    elif destination == 'kaggle':
+        save_adapter_dataset(checkpoint, run_dir, round_id)
+    elif destination == 'github':
+        if experimental:
+            directory = Path(run_dir) / f'round_{round_id:02d}'
+            directory.mkdir(exist_ok=True)
+            atomic_json(directory / 'backup_status.json', {
+                'destination': 'github', 'status': 'blocked', 'checkpoint': str(checkpoint),
+                'reason': 'Experimental checkpoints are ineligible for GitHub adapter upload',
+            })
+            print('GitHub adapter backup blocked for experimental checkpoint.', flush=True)
+        else:
+            from .github_backup import upload_latest_adapter
+            upload_latest_adapter(run_dir)
+
+
 def run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapter=None,
              semantic_result=None, continuation_authorized=False, evaluate_release=False):
     decision = None
@@ -87,7 +119,9 @@ def run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapte
 
 def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, decision, evaluate_release):
     store = Store(resolve_path(config['output_dir']))
-    check_backup_setup()
+    backup_target = backup_destination()
+    if backup_target == 'kaggle':
+        check_backup_setup()
     schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
     settings_hash = digest({'config': config, 'parent': parent_config,
                             'schemas': schemas, 'student': runtime.identity(), 'scoring': SCORING_VERSION, 'trusted_templates': TEMPLATE_VERSION})
@@ -226,15 +260,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             if not selected:
                 raise ValueError('No acceptable provisional development checkpoint for release evaluation')
             release = Store(store.path('release'))
-            from .github_backup import file_sha256
-
             checkpoints = {'initial': state['initial_checkpoint'], 'selected': selected}
-            fingerprints = {name: {str(path.relative_to(Path(checkpoint))): file_sha256(path)
-                                   for path in sorted(Path(checkpoint).glob('adapter*')) if path.is_file()}
-                            for name, checkpoint in checkpoints.items()}
-            if any('adapter_config.json' not in files or not any(name.endswith('.safetensors') for name in files)
-                   for files in fingerprints.values()):
-                raise ValueError('Release evaluation requires intact initial and provisional adapters')
+            fingerprints = {name: adapter_files(checkpoint) for name, checkpoint in checkpoints.items()}
             identity = {'benchmark_hash': digest(final_test), **checkpoints, 'checkpoints': fingerprints,
                         'development_hash': digest(development), 'run': str(store.directory.resolve())}
             reservation_store = Store(resolve_path(saved_split).parent / 'release_reservations')
@@ -261,7 +288,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             reports, scores = {}, {}
             for label, checkpoint in [('initial', identity['initial']), ('selected', selected)]:
                 runtime.restore(checkpoint)
-                test_evaluator.checkpoint_identity = checkpoint
+                test_evaluator.checkpoint_path = checkpoint
                 folder = release.path(label)
                 report = test_evaluator.evaluate(final_test, folder)
                 validate_report(report, schemas, 6)
@@ -273,7 +300,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             changes = [(item, scores['selected'][item['record']['id']] - scores['initial'][item['record']['id']])
                        for item in final_test]
             paired = paired_summary([change for _, change in changes],
-                                    [item['source_group'] for item, _ in changes])
+                                    [item['source_group'] for item, _ in changes],
+                                    strata=[item['record']['task'] for item, _ in changes])
             per_task = {}
             for task in schemas:
                 subset = [(item, change) for item, change in changes if item['record']['task'] == task]
@@ -286,6 +314,15 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                                  'limitations': ['Six cases per task; one case changes the task score by up to 16.7 points.',
                                                  '108 cases cannot reliably establish a one-point overall gain.',
                                                  'Use a larger, independently validated or human-reviewed benchmark for stronger release claims.']})
+
+        def verify_release_binding(comparison_report, selected_checkpoint):
+            benchmark_hash = digest(final_test)
+            for label, checkpoint in (('baseline', state['initial_checkpoint']),
+                                      ('selected', selected_checkpoint)):
+                report = comparison_report[label]
+                if (report.get('benchmark_hash') != benchmark_hash
+                        or report.get('adapter_sha256') != checkpoint_binding(checkpoint)[1]):
+                    raise ValueError('Saved release lacks verified benchmark or adapter identity')
 
         def finalize():
             if saved_split:
@@ -303,18 +340,28 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                 if hasattr(evaluator, 'semantic_judge'):
                     test_evaluator.semantic_judge = evaluator.semantic_judge
                 runtime.restore(state['initial_checkpoint'])
-                test_evaluator.checkpoint_identity = state['initial_checkpoint']
+                test_evaluator.checkpoint_path = state['initial_checkpoint']
                 baseline = test_evaluator.evaluate(final_test, store.path('final_test_baseline'))
                 runtime.restore(state['best_checkpoint'])
-                test_evaluator.checkpoint_identity = state['best_checkpoint']
+                test_evaluator.checkpoint_path = state['best_checkpoint']
                 selected = test_evaluator.evaluate(final_test, store.path('final_test_selected'))
                 for report in (baseline, selected):
                     validate_report(report, schemas, minimum)
-                state['final_comparison'] = comparison(baseline, selected)
+                final_comparison = comparison(baseline, selected)
                 if reviewed_test:
-                    state['promotion'] = promotion_gate(baseline, selected, quality, config['thresholds'], schemas)
-                    state['release_checkpoint'] = state['best_checkpoint'] if state['promotion']['accepted'] else state['initial_checkpoint']
+                    promotion = promotion_gate(baseline, selected, quality, config['thresholds'], schemas)
+                    if promotion['accepted']:
+                        verify_release_binding(final_comparison, state['best_checkpoint'])
+                    state['promotion'] = promotion
+                    state['release_checkpoint'] = state['best_checkpoint'] if promotion['accepted'] else state['initial_checkpoint']
+                state['final_comparison'] = final_comparison
                 atomic_json(state_path, state)
+            elif reviewed_test and final_test and state.get('promotion', {}).get('accepted'):
+                saved = state['final_comparison']
+                verify_release_binding(saved, state['release_checkpoint'])
+                if not promotion_gate(saved['baseline'], saved['selected'], quality,
+                                      config['thresholds'], schemas)['accepted']:
+                    raise ValueError('Saved release lacks complete passing safety evidence')
             if not reviewed_test:
                 state['promotion'] = {'accepted': False, 'reason': 'synthetic evaluation; no independent gold benchmark'}
                 state['evaluation_status'] = 'automatically_evaluated'
@@ -330,41 +377,32 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             raise ValueError('Next-round checkpoint disagrees with the accepted best')
         state.update(next_round_start_checkpoint=state['best_checkpoint'], last_checkpoint=state['best_checkpoint'])
         runtime.restore(state['next_round_start_checkpoint'])
+        best_report = state['best_report'] or {}
+        if best_report.get('generation_key'):
+            best_adapter = best_report.get('adapter_sha256')
+            if not best_adapter:
+                raise ValueError('Saved accepted evaluation lacks verified adapter-weight identity')
+            if getattr(runtime, 'restored_adapter', None) != (
+                    str(Path(state['best_checkpoint']).resolve()), best_adapter):
+                raise ValueError('Accepted adapter differs from the evaluated checkpoint')
         if state['status'] != 'running':
             return finalize()
 
         # Evaluate once before training. A successful baseline needs no training.
         if state.get('baseline_report') is None:
             print(f'Starting baseline evaluation on {len(development)} examples.', flush=True)
-            evaluator.checkpoint_identity = state['initial_checkpoint']
+            evaluator.checkpoint_path = state['initial_checkpoint']
             report = evaluator.evaluate(development, store.path('baseline'))
             validate_report(report, schemas, config['development_examples_per_task'])
             state.update(latest_report=report, best_report=report, baseline_report=report)
             if passed(report):
+                operational_gate(report, report, quality)
                 state.update(provisional_best_checkpoint=state['initial_checkpoint'], provisional_best_report=report)
             if stop_on_thresholds and passed(report):
                 state['status'] = 'thresholds_met'
             atomic_json(state_path, state)
             if stop_on_thresholds and passed(report):
                 return finalize()
-
-        best_report = state['best_report']
-        if best_report.get('benchmark_hash') and 'evaluation_protocol' not in best_report:
-            # Recover safety metadata from frozen generations and judgments in
-            # the accepted checkpoint's original evaluation directory.
-            best = state['best_checkpoint']
-            if best == state['initial_checkpoint']:
-                folder = store.path('baseline')
-            else:
-                entry = next(row for row in state['history'] if row['checkpoint'] == best)
-                folder = store.path(f"round_{entry['round']:02d}/lighteval")
-            if not (folder / 'generation.json').is_file():
-                raise ValueError('Missing frozen predictions for the accepted checkpoint')
-            evaluator.checkpoint_identity = best
-            refreshed = evaluator.evaluate(development, folder)
-            validate_report(refreshed, schemas, config['development_examples_per_task'])
-            state['best_report'] = refreshed
-            atomic_json(state_path, state)
 
         exclusions = development + final_test
         if saved_split:
@@ -517,7 +555,6 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     if trained['training_hash'] != training_hash:
                         raise ValueError('Saved round training inputs changed; refusing to reuse checkpoint')
                     checkpoint = trained['checkpoint']
-                    runtime.restore(checkpoint)
                     print('Reusing finished round training; retrying backup/evaluation.', flush=True)
                 else:
                     print(f'Starting QLoRA training on {len(pairs)} pairs.', flush=True)
@@ -545,22 +582,16 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                 if state.get('latest_checkpoint') != checkpoint:
                     state.update(latest_checkpoint=checkpoint, latest_report=None)
                     atomic_json(state_path, state)
-                if (os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1'
-                        or (semantic_scoring and os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1')):
-                    from .drive_backup import save_drive_adapter
-                    save_drive_adapter(checkpoint, store.directory, round_id)
-                elif os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1':
-                    from .github_backup import upload_latest_adapter
-                    upload_latest_adapter(store.directory)
-                else:
-                    save_adapter_dataset(checkpoint, store.directory, round_id)
-                evaluator.checkpoint_identity = checkpoint
+                backup_adapter(backup_target, checkpoint, store.directory, round_id,
+                               experimental=semantic_scoring or bool(saved_split))
+                evaluator.checkpoint_path = checkpoint
+                runtime.restore(checkpoint)
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
 
                 comparator = state['best_report']
                 comparator_checkpoint = state['best_checkpoint']
-                hard = operational_gate(comparator, report, quality, require_case_evidence=semantic_scoring)
+                hard = operational_gate(comparator, report, quality)
                 statistical = regression_gate(comparator, report, quality)
                 improvement = report['macro_task_score'] - comparator['macro_task_score']
                 minimum_gain = quality.get('minimum_macro_improvement', .01) if semantic_scoring else 0

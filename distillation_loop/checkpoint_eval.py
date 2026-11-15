@@ -10,8 +10,8 @@ from self_instruct_pipeline.config import ROOT
 from self_instruct_pipeline.persistence import Store, atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
 
+from .adapter_identity import adapter_files, checkpoint_binding
 from .core import aggregate_scores, score_response
-from .github_backup import file_sha256
 
 STAGES = {
     'initial': 'initial_adapter',
@@ -159,10 +159,8 @@ def checkpoint_config(checkpoints, config):
                                                    'modules_to_save', 'use_dora', 'lora_bias', 'use_qalora'))):
             raise ValueError(f'Unsupported Unsloth adapter configuration at {path}')
         signatures.append({key: adapter[key] for key in fields if key != 'target_modules'})
-        fingerprints[stage] = {
-            'config': file_sha256(metadata),
-            'weights': file_sha256(path / 'adapter_model.safetensors'),
-        }
+        files = adapter_files(path)
+        fingerprints[stage] = {'config': files[metadata.name], 'weights': files['adapter_model.safetensors']}
     first = signatures[0]
     if any(signature != first for signature in signatures):
         raise ValueError('Checkpoints must use the same base model and LoRA settings')
@@ -193,10 +191,14 @@ def run(run_dir, output, *, smoke=False, reuse_original=False, judge_budget=None
     payloads = [target_payload(item['record'], schemas) for item in cases]
     modes = ('A',) if greedy_only else ('A', 'B')
     jobs = [(mode, stage) for mode in modes for stage in checkpoints]
+    bindings = {stage: checkpoint_binding(path) for stage, path in checkpoints.items()}
     replay = {}
     if reuse_original:
-        replay = {('A', 'initial'): saved_predictions(run_dir / 'baseline', cases),
-                  ('A', 'sft_orpo'): saved_predictions(run_dir / 'round_01/lighteval', cases)}
+        for stage, folder in (('initial', run_dir / 'baseline'), ('sft_orpo', run_dir / 'round_01/lighteval')):
+            generation = json.loads((folder / 'generation.json').read_text())
+            if generation.get('adapter_sha256') != bindings[stage][1]:
+                raise ValueError(f'Original {stage} generation lacks matching verified adapter-weight identity')
+            replay['A', stage] = saved_predictions(folder, cases)
 
     if Path('/content/drive/MyDrive').is_dir():
         os.environ.setdefault('DISTILLATION_LOCAL_LOCK_DIR', '/content/distillation-eval-locks')
@@ -220,7 +222,14 @@ def run(run_dir, output, *, smoke=False, reuse_original=False, judge_budget=None
         runtime = None
         for mode, stage in jobs:
             path = store.path(f'{mode}_{stage}_generation.json')
+            binding = bindings[stage]
+            receipt_path = store.path(f'{mode}_{stage}_generation_receipt.json')
+            identity = {'adapter_sha256': binding[1], 'manifest_sha256': digest(manifest)}
             if path.exists():
+                saved = json.loads(path.read_text())
+                expected = {**identity, 'predictions_sha256': digest(saved)}
+                if not receipt_path.is_file() or json.loads(receipt_path.read_text()) != expected:
+                    raise ValueError(f'Saved {mode}/{stage} generation lacks matching verified adapter identity')
                 print(f'Reusing {mode}/{stage} ({len(cases)} cases)', flush=True)
                 continue
             if (mode, stage) in replay:
@@ -233,18 +242,25 @@ def run(run_dir, output, *, smoke=False, reuse_original=False, judge_budget=None
                     atomic_json(store.path('runtime.json'), runtime.identity())
                 partial_path = store.path(f'{mode}_{stage}_partial.json')
                 partial = json.loads(partial_path.read_text()) if partial_path.exists() else {}
+                if partial_path.exists() and partial.get('identity') != identity:
+                    raise ValueError(f'Partial {mode}/{stage} generation lacks matching verified adapter identity')
                 completed = partial.get('predictions')
                 done = sum(p is not None for p in completed) if completed is not None else 0
                 print(f'Generating {mode}/{stage}: {done}/{len(cases)} already saved', flush=True)
                 runtime.restore(checkpoints[stage])
+                if runtime.restored_adapter != binding:
+                    raise ValueError('Checkpoint comparison restored a different adapter')
                 runtime.repetition_stopping = RepetitionStopping if mode == 'B' else None
                 def save_batch(rows, batch_size):
-                    atomic_json(partial_path, {'predictions': rows, 'batch_size': batch_size})
+                    atomic_json(partial_path, {'identity': identity, 'predictions': rows, 'batch_size': batch_size})
 
                 predictions = runtime.infer_many(payloads, batch_size=partial.get('batch_size'),
                                                  completed=completed, on_batch=save_batch)
             if len(predictions) != len(cases) or any(p is None for p in predictions):
                 raise ValueError(f'Incomplete generations for {mode}/{stage}')
+            if checkpoint_binding(checkpoints[stage]) != binding:
+                raise ValueError('Checkpoint comparison adapter changed during generation')
+            atomic_json(receipt_path, {**identity, 'predictions_sha256': digest(predictions)})
             atomic_json(path, predictions)
             store.path(f'{mode}_{stage}_partial.json').unlink(missing_ok=True)
         if runtime is not None:

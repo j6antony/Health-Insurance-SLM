@@ -26,7 +26,14 @@ class NativeTrainingTests(unittest.TestCase):
                 if set(payload)!={'instruction','scenario','response_schema'}:raise AssertionError('Input leakage')
                 return {'raw':json.dumps(reference),'truncated':False}
         with tempfile.TemporaryDirectory() as directory:
-            result=LightevalEvaluator(Runtime(),{task:schemas[task]},1).evaluate(
+            from distillation_loop.adapter_identity import checkpoint_binding
+            adapter = Path(directory) / 'adapter'
+            adapter.mkdir()
+            (adapter / 'adapter_config.json').write_text('{}')
+            (adapter / 'adapter_model.safetensors').write_bytes(b'tiny fixture')
+            runtime = Runtime()
+            runtime.restored_adapter = checkpoint_binding(adapter)
+            result=LightevalEvaluator(runtime,{task:schemas[task]},1).evaluate(
                 [{'record':record,'reference':reference}],Path(directory))
             self.assertEqual(result['macro_task_score'],1.0)
             self.assertEqual(result['lighteval_corpus']['task_score'],1.0)

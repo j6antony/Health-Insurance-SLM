@@ -124,3 +124,20 @@ run directories beyond the original run. Use repeatable `--exposure-root`
 arguments or the loop config's `historical_exposure_roots` list. When a saved
 screening receipt refers to an unavailable scenario record, split creation
 fails rather than assuming the candidate is independent.
+
+
+## Adapter identity and paired intervals
+
+The diagnostic notebook verifies the ZIP and the extracted project before both
+subprocesses. A stale extraction is moved aside and replaced with a verified
+copy. The replay of the frozen checkpoint comparison continues to use its
+recorded manifest and verifies the original adapter files with
+`--checkpoint-root`. Online evaluation caches from before adapter identity
+was recorded cannot be resumed as verified generations. Keep those artifacts
+and use a fresh evaluation output directory if a later run is authorized.
+
+The semantic decision uses the source-family interval. The report also includes
+the case-level paired bootstrap and the conservative interval. Source families
+are sampled within each task. Each sampled family contributes all of its paired
+changes, each task mean uses that resample's case count, and tasks receive
+equal weight.

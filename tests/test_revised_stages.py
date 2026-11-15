@@ -99,7 +99,7 @@ class RevisedStageTests(unittest.TestCase):
     def test_saved_release_split_is_explicit_and_cannot_be_reused_for_tuning(self):
         from unittest.mock import patch
         from distillation_loop.benchmarks import fixed_family_split
-        from test_distillation_loop import FakeRuntime, report
+        from test_distillation_loop import FakeRuntime, report, with_safety_evidence
 
         parent, config = distillation_1000_configs(load_config(), load_loop_config(), self.root / 'run')
         config.update(require_semantic_decision=False, stop_when_thresholds_met=True)
@@ -135,7 +135,7 @@ class RevisedStageTests(unittest.TestCase):
                 directory.mkdir(parents=True, exist_ok=True)
                 atomic_jsonl(directory / 'predictions.jsonl', [
                     {'scenario_id': row['record']['id'], 'task_score': .99} for row in rows])
-                return {**report(.99), 'examples_per_task': dict.fromkeys(SCHEMAS, self.minimum)}
+                return with_safety_evidence({**report(.99), 'examples_per_task': dict.fromkeys(SCHEMAS, self.minimum)})
 
         with patch('distillation_loop.controller.LightevalEvaluator', Evaluator):
             result = run_loop(Runtime(), parent, config)

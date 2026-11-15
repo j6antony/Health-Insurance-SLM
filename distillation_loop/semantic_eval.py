@@ -152,6 +152,7 @@ def score(cases, generations, plan, store, quality, thresholds, identity):
     judge = SemanticJudge(None, plan.store.directory, plan.schemas, resolve_judgment=plan.resolve)
     runs, rows_by_stage = {}, {}
     strata = [item['record']['task'] for item in cases]
+    families = [item['source_group'] for item in cases]
     for stage, predictions in generations.items():
         rows, case_scores = [], {}
         for item, prediction in zip(cases, predictions, strict=True):
@@ -186,10 +187,12 @@ def score(cases, generations, plan, store, quality, thresholds, identity):
                    for a, b in joined if any(a[k] != b[k] for k in
                    ('task_score', 'schema_evidence_valid', 'review_flag_correct', 'grading_basis'))]
         pairs[f'{right} minus {left}'] = {
-            **{field: paired_summary([b[field] - a[field] for a, b in joined], strata=strata)
+            **{field: paired_summary([b[field] - a[field] for a, b in joined], families, strata=strata)
                for field in ('task_score', 'schema_evidence_valid', 'review_flag_correct')},
             'per_task': {task: paired_summary([b['task_score'] - a['task_score'] for a, b in joined
-                                              if a['task'] == task]) for task in plan.schemas},
+                                              if a['task'] == task],
+                                              [family for label, family in zip(strata, families) if label == task])
+                         for task in plan.schemas},
             'changed_cases': changes,
         }
     decision = diagnostic_decision(runs['initial'], runs['sft'], pairs['sft minus initial']['task_score'],

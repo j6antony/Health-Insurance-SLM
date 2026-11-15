@@ -71,6 +71,7 @@ class DualGPUTests(unittest.TestCase):
         runtime.config = {'output_dir': folder}
         runtime.model_name = 'Qwen/Qwen3-8B'
         runtime.checkpoint = None
+        runtime.restored_adapter = None
         runtime.batch_size = 2
         runtime.timeout_seconds = 60
         runtime.prepare = lambda: None

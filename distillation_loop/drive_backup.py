@@ -1,5 +1,6 @@
 """Versioned adapter ZIPs stored in a mounted Google Drive run directory."""
 import hashlib
+import os
 import json
 import re
 import shutil
@@ -35,8 +36,17 @@ def verify_archive(archive, manifest):
         return False
 
 
-def save_drive_adapter(checkpoint, run_dir, round_id):
-    checkpoint, run_dir=Path(checkpoint),Path(run_dir)
+def mounted_drive_destination(run_dir):
+    mount = Path('/content/drive')
+    return (os.path.ismount(mount) and (mount / 'MyDrive').is_dir()
+            and run_dir.resolve().is_relative_to((mount / 'MyDrive').resolve()))
+
+
+def save_drive_adapter(checkpoint, run_dir, round_id, *, require_mounted=False):
+    checkpoint, run_dir = Path(checkpoint), Path(run_dir)
+    directory = run_dir / 'drive_backups'
+    if require_mounted and not mounted_drive_destination(directory):
+        raise ValueError('Google Drive backup requires a run directory on the mounted MyDrive destination')
     if not (checkpoint/'adapter_config.json').is_file() or not list(checkpoint.glob('adapter_model*.safetensors')):
         raise ValueError('Missing completed adapter files; no Google Drive backup was recorded')
     allowed={'adapter_config.json','adapter_model.safetensors.index.json','tokenizer.json',
@@ -46,7 +56,7 @@ def save_drive_adapter(checkpoint, run_dir, round_id):
                  (p.name in allowed or re.fullmatch(r'adapter_model(?:-\d+-of-\d+)?\.safetensors',p.name)))
     hashes={path.name:file_hash(path) for path in files}
     manifest={'round':round_id,'files':hashes,'format':'PEFT LoRA adapter; use original Qwen/Qwen3-8B base'}
-    directory=run_dir/'drive_backups';directory.mkdir(parents=True,exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
     archive=directory/f'round_{round_id:02d}-{digest(hashes)[:12]}.zip'
     if not verify_archive(archive,manifest):
         temporary=archive.with_suffix('.zip.tmp')
@@ -64,8 +74,14 @@ def save_drive_adapter(checkpoint, run_dir, round_id):
             temporary.replace(archive)
         finally:
             temporary.unlink(missing_ok=True)
-    receipt={'status':'drive_archive_verified','archive':str(archive),
-             'sha256':file_hash(archive),'checkpoint':str(checkpoint),'round':round_id}
-    atomic_json(directory/f'round_{round_id:02d}.json',receipt)
-    print('Google Drive adapter saved and archive verified:',archive,flush=True)
+    archive_hash = file_hash(archive)
+    mounted = mounted_drive_destination(archive)
+    if require_mounted and not mounted:
+        raise ValueError('Google Drive backup destination became unavailable during export')
+    receipt = {'status': 'drive_mount_archive_verified' if mounted else 'local_archive_verified',
+               'destination': 'google_drive_mount' if mounted else 'local_filesystem',
+               'archive': str(archive), 'sha256': archive_hash,
+               'checkpoint': str(checkpoint), 'round': round_id}
+    atomic_json(directory / f'round_{round_id:02d}.json', receipt)
+    print(f'Adapter archive verified on {receipt["destination"]}: {archive}', flush=True)
     return receipt

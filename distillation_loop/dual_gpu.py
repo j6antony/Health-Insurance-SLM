@@ -9,6 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from .adapter_identity import checkpoint_binding
+
 from self_instruct_pipeline.config import ROOT
 from self_instruct_pipeline.persistence import atomic_json, append_jsonl, read_jsonl
 
@@ -37,6 +39,7 @@ class DualGPURuntime:
         self.model_config = AutoConfig.from_pretrained(model_name, token=False)
         self.batch_size, self.timeout_seconds = batch_size, timeout_seconds
         self.checkpoint = None
+        self.restored_adapter = None
         self.prepared = False
 
     def identity(self):
@@ -57,10 +60,11 @@ class DualGPURuntime:
         self.prepared = True
 
     def restore(self, checkpoint):
-        path = Path(checkpoint).resolve()
-        if not (path/'adapter_config.json').exists():
-            raise ValueError('Missing adapter checkpoint')
-        self.checkpoint = str(path)
+        self.restored_adapter = None
+        self.checkpoint = None
+        binding = checkpoint_binding(checkpoint)
+        self.checkpoint, _ = binding
+        self.restored_adapter = binding
 
     def save_checkpoint(self, checkpoint):
         checkpoint = Path(checkpoint).resolve()
@@ -69,7 +73,7 @@ class DualGPURuntime:
                 shutil.copytree(self.checkpoint, checkpoint, dirs_exist_ok=True)
         else:
             self._run('initialize', checkpoint=str(checkpoint), processes=1)
-            self.checkpoint = str(checkpoint)
+            self.restore(checkpoint)
         return str(checkpoint)
 
     def _run(self, operation, processes=2, **payload):
@@ -79,7 +83,8 @@ class DualGPURuntime:
         with tempfile.TemporaryDirectory(dir=jobs) as folder:
             directory = Path(folder)
             job = {'operation': operation, 'config': self.config, 'model_name': self.model_name,
-                   'adapter': self.checkpoint, 'batch_size': self.batch_size, **payload}
+                   'adapter': self.checkpoint, 'adapter_binding': self.restored_adapter,
+                   'batch_size': self.batch_size, **payload}
             atomic_json(directory/'job.json', job)
             env = os.environ.copy()
             env.update(CUDA_VISIBLE_DEVICES='0,1', TOKENIZERS_PARALLELISM='false', OMP_NUM_THREADS='2')

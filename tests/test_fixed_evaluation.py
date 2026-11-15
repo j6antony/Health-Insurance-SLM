@@ -70,7 +70,7 @@ class FixedEvaluationTests(unittest.TestCase):
                     self.rows = rows
                 report=fixtures.report(.99)
                 report['examples_per_task']={t:30 for t in fixtures.SCHEMAS}
-                return report
+                return fixtures.with_safety_evidence(report)
         evaluator=Evaluator()
         with tempfile.TemporaryDirectory() as folder:
             config=load_loop_config();config['output_dir']=folder

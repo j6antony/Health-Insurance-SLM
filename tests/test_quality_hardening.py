@@ -70,6 +70,7 @@ class QualityHardeningTests(unittest.TestCase):
         evaluator = LightevalEvaluator(runtime, {'policy_coverage_qa': SCHEMAS['policy_coverage_qa']}, 1)
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder)
+            runtime.restore(runtime.save_checkpoint(output / 'adapter'))
             with self.assertRaises(ReviewRequired): evaluator.evaluate([item], output)
             queue = read_jsonl(output / 'review_queue.jsonl')
             self.assertEqual(len(queue), 1)
@@ -228,9 +229,13 @@ class FullLoopIntegrationTests(unittest.TestCase):
                 def prepare(self): pass
                 def save_checkpoint(self, path):
                     path = Path(path); path.mkdir(parents=True, exist_ok=True)
-                    (path / 'version.json').write_text(json.dumps(self.version))
+                    (path / 'adapter_config.json').write_text('{}')
+                    (path / 'adapter_model.safetensors').write_text(json.dumps(self.version))
                     return str(path)
-                def restore(self, path): self.version = json.loads((Path(path) / 'version.json').read_text())
+                def restore(self, path):
+                    from distillation_loop.adapter_identity import checkpoint_binding
+                    self.version = json.loads((Path(path) / 'adapter_model.safetensors').read_text())
+                    self.restored_adapter = checkpoint_binding(path)
                 def train(self, pairs, schemas, directory):
                     self.trains += 1; self.version = 1
                     self.pairs = pairs

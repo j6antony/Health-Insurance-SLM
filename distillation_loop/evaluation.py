@@ -6,6 +6,7 @@ from importlib.metadata import version
 
 from self_instruct_pipeline.persistence import atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
+from .adapter_identity import checkpoint_binding
 from .core import aggregate_scores, clean_response, score_response
 from .student import infer_payloads
 from .review import grade_reviewed, review_key, ReviewRequired, SCORING_VERSION
@@ -77,18 +78,37 @@ class LightevalEvaluator:
         print(f'Evaluating {output_dir.name}: {len(development)} student generations.', flush=True)
         output_dir.mkdir(parents=True, exist_ok=True)
         generation_path = output_dir / 'generation.json'
-        generation_key = digest({'data': development, 'student': self.runtime.identity(), 'scoring': SCORING_VERSION,
-                                 'checkpoint': getattr(self, 'checkpoint_identity', None)})
+        restored = getattr(self.runtime, 'restored_adapter', None)
+        if not restored:
+            raise ValueError('Evaluation requires a successfully restored adapter')
+        checkpoint = getattr(self, 'checkpoint_path', restored[0])
+        binding = checkpoint_binding(checkpoint)
+        if restored != binding:
+            raise ValueError('Evaluation adapter does not match the runtime restore')
+        runtime_settings = getattr(self.runtime, 'config', {})
+        generation_protocol = {
+            'student': self.runtime.identity(), 'schemas': self.schemas,
+            'inference': runtime_settings.get('inference'),
+            'max_sequence_length': runtime_settings.get('training', {}).get('max_sequence_length'),
+            'evidence_first': runtime_settings.get('training', {}).get('evidence_first', False),
+        }
+        generation_key = digest({'data': development, 'generation_protocol': generation_protocol,
+                                 'scoring': SCORING_VERSION, 'adapter_sha256': binding[1]})
         if generation_path.exists():
             saved = json.loads(generation_path.read_text())
-            if saved['key'] != generation_key:
+            if not saved.get('adapter_sha256'):
+                raise ValueError('Saved generations lack verified adapter-weight identity; use a new evaluation directory')
+            if saved['adapter_sha256'] != binding[1] or saved['key'] != generation_key:
                 raise ValueError('Evaluation inputs changed; refusing stale prediction reuse')
             predictions = saved['predictions']
         else:
             predictions = infer_payloads(self.runtime, [target_payload(item['record'], self.schemas) for item in development])
             if len(predictions) != len(development):
                 raise ValueError('Evaluation predictions are incomplete')
-            atomic_json(generation_path, {'key': generation_key, 'predictions': predictions})
+            if self.runtime.restored_adapter != binding or checkpoint_binding(checkpoint) != binding:
+                raise ValueError('Evaluation adapter changed during generation')
+            atomic_json(generation_path, {'key': generation_key, 'adapter_sha256': binding[1],
+                                          'predictions': predictions})
         judgments = {}
         for judgment in read_jsonl(output_dir / 'adjudications.jsonl'):
             key = judgment['review_key']
@@ -152,16 +172,12 @@ class LightevalEvaluator:
         report.update(engine='reviewed-reference-and-human-adjudication' if reviewed else 'lighteval-0.11.0-custom-metrics',
                       reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'fixed locally authored synthetic references; no independent expert review' if fixed else 'automatically checked synthetic references; no human review or independent gold'),
                       scoring=SCORING_VERSION, adjudications_hash=digest(judgments),
-                      benchmark_hash=digest(development), generation_key=generation_key)
+                      benchmark_hash=digest(development), generation_key=generation_key, adapter_sha256=binding[1])
         if judge is not None:
             report.update(engine='source-rubric-model-judge', scoring=judge.version,
                           reference_status='synthetic references with automated source-grounded judgments')
-        runtime_settings = getattr(self.runtime, 'config', {})
         report['evaluation_protocol'] = digest({
-            'engine': report['engine'], 'scoring': report['scoring'], 'student': self.runtime.identity(),
-            'schemas': self.schemas, 'inference': runtime_settings.get('inference'),
-            'max_sequence_length': runtime_settings.get('training', {}).get('max_sequence_length'),
-            'evidence_first': runtime_settings.get('training', {}).get('evidence_first', False),
+            **generation_protocol, 'engine': report['engine'], 'scoring': report['scoring'],
             'judge': getattr(getattr(judge, 'parent', None), 'settings', None),
         })
         output_dir.mkdir(parents=True,exist_ok=True)

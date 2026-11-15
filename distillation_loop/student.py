@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+from .adapter_identity import checkpoint_binding
+
 from self_instruct_pipeline.persistence import atomic_json
 from self_instruct_pipeline.prompt_builder import target_payload
 
@@ -87,6 +89,7 @@ class StudentRuntime:
         self.model, self.tokenizer, self.config = model, tokenizer, loop_config
         self.distributed = distributed
         self.prepared = False
+        self.restored_adapter = None
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -125,12 +128,17 @@ class StudentRuntime:
     def restore(self, checkpoint):
         from peft import set_peft_model_state_dict
         from peft.utils.save_and_load import load_peft_weights
+        self.restored_adapter = None
         self.prepare()
-        if not Path(checkpoint, 'adapter_config.json').is_file():
-            raise ValueError('Missing LoRA adapter checkpoint')
-        state = load_peft_weights(str(checkpoint), device='cpu')
-        set_peft_model_state_dict(self.model, state)
+        binding = checkpoint_binding(checkpoint)
+        state = load_peft_weights(binding[0], device='cpu')
+        loaded = set_peft_model_state_dict(self.model, state)
+        if loaded.unexpected_keys or any('lora_' in key for key in loaded.missing_keys):
+            raise ValueError('Adapter restore did not match the runtime LoRA parameters')
         self.model.eval()
+        if checkpoint_binding(checkpoint) != binding:
+            raise ValueError('Adapter changed during restore')
+        self.restored_adapter = binding
 
     def save_checkpoint(self, checkpoint):
         self.prepare()
@@ -304,6 +312,7 @@ def train_tokenized(runtime, examples, output_dir):
     runtime.model.config.use_cache = False
     # Lighteval and inference must not leave the global autograd state disabled.
     torch.set_grad_enabled(True)
+    runtime.restored_adapter = None
     runtime._set_training_mode()
     trainer = None
     try:

@@ -18,7 +18,8 @@ def scored(value, *, validity=1, losses=None, incomplete=(), claims=(), missed=(
                              incomplete=key in incomplete, unsupported_claims=key in claims,
                              missed_required_review=key in missed)
     result = report(value, validity)
-    result['case_scores'] = rows
+    result.update(case_scores=rows, benchmark_hash='test-benchmark', scoring='test-scoring',
+                  evaluation_protocol='test-protocol', adapter_sha256='test-adapter')
     result['examples_per_task'] = dict.fromkeys(SCHEMAS, 20)
     result['per_task'] = {task: sum(row['score'] for row in rows.values() if row['task'] == task) / 20
                           for task in SCHEMAS}

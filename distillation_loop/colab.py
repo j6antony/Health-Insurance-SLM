@@ -172,6 +172,7 @@ class UnslothStudentRuntime(StudentRuntime):
         if not rows:
             return self.save_checkpoint(Path(output_dir) / 'adapter')
 
+        self.restored_adapter = None
         self._set_training_mode()
         self.model.config.use_cache = False
         trainer = None

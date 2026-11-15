@@ -190,7 +190,7 @@ class DriveBackupTests(unittest.TestCase):
                 counts=Counter(x['record']['task'] for x in rows)
                 report=fixtures.report(.1 if self.calls==1 else .95)
                 report['examples_per_task']=dict(counts)
-                return report
+                return fixtures.with_safety_evidence(report)
         with tempfile.TemporaryDirectory() as folder:
             profile.update(output_dir=folder,max_rounds=1,student_conditioned_training=False)
             def curriculum(base,excluded,directory):

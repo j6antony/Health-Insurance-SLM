@@ -30,8 +30,11 @@ def regression_gate(baseline, candidate, settings):
 
 def promotion_gate(baseline, candidate, settings, thresholds, tasks):
     from .core import satisfactory
+    try:
+        hard = operational_gate(baseline, candidate, settings)
+    except SafetyEvidenceError as exc:
+        return {'accepted': False, 'reason': str(exc)}
     result = regression_gate(baseline, candidate, settings)
-    hard = operational_gate(baseline, candidate, settings, require_case_evidence=False)
     result['operational_safety'] = hard
     result['no_observed_high_risk_errors'] = not any(hard['safety_events'].values())
     improvement = candidate['macro_task_score'] - baseline['macro_task_score']
@@ -112,39 +115,44 @@ def experimental_limits(settings):
     return limits
 
 
-def operational_gate(comparator, candidate, settings, *, require_case_evidence=True):
+class SafetyEvidenceError(ValueError):
+    """An automated promotion cannot be evaluated from the saved evidence."""
+
+
+def operational_gate(comparator, candidate, settings):
     """Reject observed safety regressions independently of sample significance."""
     from .core import validate_report
 
     limits = experimental_limits(settings)
     for summary in (comparator, candidate):
         validate_report(summary, comparator['per_task'], 1)
-    before, after = comparator.get('case_scores', {}), candidate.get('case_scores', {})
+    before, after = comparator.get('case_scores'), candidate.get('case_scores')
     flags = ('valid', 'incomplete', 'unsupported_claims', 'missed_required_review')
-    complete = bool(before and after) and all(
-        type(row.get(flag)) is bool for rows in (before, after) for row in rows.values() for flag in flags)
-    if comparator['per_task'].keys() != candidate['per_task'].keys():
-        raise ValueError('Operational safety requires the same evaluation tasks')
+    for rows in (before, after):
+        if not isinstance(rows, dict) or not rows or any(
+                not isinstance(key, str) or not key.strip() or not isinstance(row, dict)
+                or not isinstance(row.get('task'), str) or any(type(row.get(flag)) is not bool for flag in flags)
+                for key, row in rows.items()):
+            raise SafetyEvidenceError('Promotion requires complete per-case safety evidence')
     if before.keys() != after.keys() or any(row['task'] != before[key]['task'] for key, row in after.items()):
-        raise ValueError('Operational safety requires the same paired cases and tasks')
+        raise SafetyEvidenceError('Promotion requires matching case IDs and tasks for safety evidence')
     for field in ('benchmark_hash', 'scoring', 'evaluation_protocol'):
-        if comparator.get(field) != candidate.get(field):
-            raise ValueError(f'Operational safety requires matching {field}')
-    if require_case_evidence and not complete:
-        raise ValueError('Operational safety requires complete per-case safety evidence')
-    if complete:
-        for summary, rows in ((comparator, before), (candidate, after)):
-            counts = Counter(row['task'] for row in rows.values())
-            totals = Counter()
-            for row in rows.values():
-                if type(row['score']) not in (float, int) or not 0 <= row['score'] <= 1:
-                    raise ValueError('Invalid per-case score for operational safety')
-                totals[row['task']] += row['score']
-            if (counts != summary['examples_per_task'] or counts.keys() != summary['per_task'].keys()
-                    or any(abs(totals[t] / counts[t] - summary['per_task'][t]) > 1e-9 for t in counts)
-                    or abs(sum(row['valid'] for row in rows.values()) / len(rows)
-                           - summary['schema_evidence_valid_rate']) > 1e-9):
-                raise ValueError('Per-case safety evidence disagrees with score summary')
+        value = comparator.get(field)
+        if not isinstance(value, str) or not value.strip() or value != candidate.get(field):
+            raise SafetyEvidenceError(f'Promotion requires nonempty, matching {field} for safety evidence')
+    for summary, rows in ((comparator, before), (candidate, after)):
+        counts = Counter(row['task'] for row in rows.values())
+        totals = Counter()
+        for row in rows.values():
+            value = row.get('score')
+            if type(value) not in (float, int) or not 0 <= value <= 1:
+                raise SafetyEvidenceError('Invalid per-case score for safety evidence')
+            totals[row['task']] += value
+        if (counts != summary['examples_per_task'] or counts.keys() != summary['per_task'].keys()
+                or any(abs(totals[t] / counts[t] - summary['per_task'][t]) > 1e-9 for t in counts)
+                or abs(sum(row['valid'] for row in rows.values()) / len(rows)
+                       - summary['schema_evidence_valid_rate']) > 1e-9):
+            raise SafetyEvidenceError('Per-case safety evidence disagrees with score summary')
 
     declines = {t: value - candidate['per_task'][t] for t, value in comparator['per_task'].items()}
 
@@ -167,8 +175,8 @@ def operational_gate(comparator, candidate, settings, *, require_case_evidence=T
         reject('validity_decline', (k for k, row in after.items() if not row.get('valid', True)
                                     and before[k].get('valid')), decline=decline)
     incomplete = [k for k, row in after.items() if row.get('incomplete')]
-    incomplete_rate = len(incomplete) / len(after) if complete else None
-    if incomplete_rate is not None and incomplete_rate > limits['maximum_incomplete_rate'] + 1e-12:
+    incomplete_rate = len(incomplete) / len(after)
+    if incomplete_rate > limits['maximum_incomplete_rate'] + 1e-12:
         reject('incomplete_generation', incomplete, rate=incomplete_rate)
     single = declining(limits['single_task_rejection'])
     if single:
@@ -182,7 +190,7 @@ def operational_gate(comparator, candidate, settings, *, require_case_evidence=T
         if introduced:
             reject(reason, introduced)
     return {'accepted': not reasons, 'reasons': reasons, 'limits': limits,
-            'incomplete_rate': incomplete_rate, 'case_evidence_complete': complete,
+            'incomplete_rate': incomplete_rate, 'case_evidence_complete': True,
             'task_regression_warnings': declining(limits['task_warning']),
             'safety_events': {field: sorted(k for k, row in after.items() if row.get(field))
                               for field in flags[2:]}}
@@ -193,8 +201,11 @@ def diagnostic_decision(comparator, candidate, paired, settings, *, quality_targ
     statistical = regression_gate(comparator, candidate, settings)
     delta = paired['delta']
     practical_limit = settings.get('minimum_macro_improvement', .01)
-    lower, upper = (paired['bootstrap_95pct_ci'] if 'bootstrap_95pct_ci' in paired
-                    else paired['conservative_95pct_ci'])
+    interval_key = next((key for key in ('clustered_bootstrap_95pct_ci', 'bootstrap_95pct_ci',
+                                        'conservative_95pct_ci') if key in paired), None)
+    if interval_key is None:
+        raise ValueError('Semantic diagnostic requires a paired uncertainty interval')
+    lower, upper = paired[interval_key]
     measured = candidate['macro_task_score'] - comparator['macro_task_score']
     if (not all(type(value) in (int, float) and math.isfinite(value) for value in (delta, lower, upper))
             or not -1 <= lower <= upper <= 1 or abs(measured - delta) > 1e-9):
@@ -206,6 +217,7 @@ def diagnostic_decision(comparator, candidate, paired, settings, *, quality_targ
             'quality_target': quality_target,
             'quality_target_met': candidate['schema_evidence_valid_rate'] >= quality_target,
             'operational_safety': safety, 'statistical_regression': statistical,
+            'uncertainty_interval': interval_key,
             'experimental_continuation_eligible': safety['accepted'] and outcome != 'negative_interval',
             'experimental_promotion_eligible': (safety['accepted'] and statistical['accepted']
                                                 and delta >= practical_limit and delta > 0),
@@ -218,6 +230,8 @@ def require_experimental_result(result, quality):
     try:
         before, after = (result['runs'][stage] for stage in ('initial', 'sft'))
         paired = result['paired']['sft minus initial']['task_score']
+        if 'clustered_bootstrap_95pct_ci' not in paired:
+            raise ValueError('Semantic SFT-only result requires a source-family bootstrap report')
     except (KeyError, TypeError) as exc:
         raise ValueError('Semantic SFT-only result requires investigation or a fresh diagnostic report') from exc
     decision = diagnostic_decision(before, after, paired, quality)
