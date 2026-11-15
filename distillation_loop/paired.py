@@ -1,18 +1,31 @@
 """Paired confidence bounds for scores in [0, 1]."""
 import math
-from collections import Counter
+import random
+from collections import Counter, defaultdict
 from statistics import mean
 
 
-def paired_summary(changes, groups=None):
+def paired_summary(changes, groups=None, *, strata=None):
     delta = mean(changes)
     # Hoeffding's two-sided bound handles all ties and sparse changes without
     # returning a misleading zero-width interval. Each paired delta is in [-1, 1].
     sizes = Counter(groups).values() if groups is not None else [1] * len(changes)
     radius = math.sqrt(2 * math.log(40) * sum((size / len(changes)) ** 2 for size in sizes))
-    return {
+    report = {
         'cases': len(changes), 'independent_units': len(sizes), 'delta': delta,
         'gains': sum(x > 0 for x in changes), 'losses': sum(x < 0 for x in changes),
         'ties': sum(x == 0 for x in changes),
+        'conservative_ci_method': 'Hoeffding bound on paired deltas',
         'conservative_95pct_ci': [max(-1, delta - radius), min(1, delta + radius)],
     }
+
+    if strata is not None:
+        partitions = defaultdict(list)
+        for stratum, change in zip(strata, changes, strict=True):
+            partitions[stratum].append(change)
+        rng = random.Random(42)
+        samples = sorted(sum(sum(rng.choices(group, k=len(group))) for group in partitions.values()) / len(changes)
+                         for _ in range(2000))
+        report.update(bootstrap_95pct_ci=[samples[49], samples[1949]],
+                      bootstrap_ci_method='paired case bootstrap stratified by task, 2000 resamples')
+    return report

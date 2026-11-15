@@ -167,6 +167,9 @@ def load_loop_config(path='config/distillation_loop.json'):
     for key in ('historical_training_plan', 'teacher_loss_candidates'):
         if key in value and (not isinstance(value[key], str) or not value[key].strip()):
             raise ValueError(f'{key} must be a nonempty path')
+    roots = value.get('historical_exposure_roots', [])
+    if not isinstance(roots, list) or any(not isinstance(root, str) or not root.strip() for root in roots):
+        raise ValueError('historical_exposure_roots must contain nonempty run directory paths')
     if type(value.get('require_semantic_decision', False)) is not bool:
         raise ValueError('require_semantic_decision must be a boolean')
     if value.get('require_semantic_decision') and (not evaluation.get('split_path')

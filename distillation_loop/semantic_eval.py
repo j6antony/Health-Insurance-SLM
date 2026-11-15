@@ -19,7 +19,9 @@ from .benchmarks import load_saved_split
 from .checkpoint_eval import STAGES, checkpoint_config, generation_summary, saved_predictions
 from .core import aggregate_scores
 from .correction import ask, judge_messages
+from .evaluation import incomplete_prediction, safety_case
 from .paired import paired_summary
+from .quality import diagnostic_decision
 from .review import grade_reviewed
 from .semantic import (JUDGMENT_INSTRUCTION, JUDGMENT_OPERATION, JUDGMENT_SCHEMA,
                        SemanticJudge, judgment_payload, read_judgment)
@@ -88,9 +90,11 @@ class JudgmentPlan:
         return key, payload, body
 
     def inspect(self, item, prediction):
+        if incomplete_prediction(prediction):
+            return None, False
         score, _ = grade_reviewed(item, prediction, self.schemas, {})
         if score is not None:
-            return None
+            return None, score['schema_evidence_valid'] == 1
         key, payload, body = self.identify(item, prediction)
         path = self.store.path(key + '.json')
         if path.is_file():
@@ -111,9 +115,9 @@ class JudgmentPlan:
                 atomic_json(path, matches[0])
         if key in self.cached:
             self.pending.pop(key, None)
-            return key
+            return key, True
         self.pending.setdefault(key, (payload, reservation_usd(self.settings, body)))
-        return key
+        return key, True
 
     def resolve(self, item, prediction):
         key, _, _ = self.identify(item, prediction)
@@ -147,17 +151,23 @@ def historical_judgments(root, cases, generations):
 def score(cases, generations, plan, store, quality, thresholds, identity):
     judge = SemanticJudge(None, plan.store.directory, plan.schemas, resolve_judgment=plan.resolve)
     runs, rows_by_stage = {}, {}
+    strata = [item['record']['task'] for item in cases]
     for stage, predictions in generations.items():
-        rows = []
+        rows, case_scores = [], {}
         for item, prediction in zip(cases, predictions, strict=True):
             record = item['record']
+            scores = judge.grade(item, {**prediction, 'truncated': incomplete_prediction(prediction)})
+            case_scores[record['id']] = safety_case(item, prediction, scores)
             rows.append({'scenario_id': record['id'], 'task': record['task'],
-                         'prediction_sha256': digest(prediction),
-                         **judge.grade(item, prediction)})
+                         'prediction_sha256': digest(prediction), **scores})
         rows_by_stage[stage] = rows
         atomic_jsonl(store.path(f'{stage}_semantic_cases.jsonl'), rows)
         runs[stage] = {
             **aggregate_scores(rows, plan.schemas, 20), **generation_summary(predictions),
+            'case_scores': case_scores,
+            'benchmark_hash': identity['development_sha256'], 'scoring': judge.version,
+            'evaluation_protocol': identity['comparison_manifest_sha256'],
+            'incomplete_generation_rate': mean(row['incomplete'] for row in case_scores.values()),
             'grading_basis_counts': dict(Counter(row['grading_basis'] for row in rows)),
             'unsupported_claims': sum(row.get('semantic_dimensions', {}).get('unsupported_claims', False) for row in rows),
             'review_flag_correct_rate': mean(row['review_flag_correct'] for row in rows),
@@ -176,34 +186,14 @@ def score(cases, generations, plan, store, quality, thresholds, identity):
                    for a, b in joined if any(a[k] != b[k] for k in
                    ('task_score', 'schema_evidence_valid', 'review_flag_correct', 'grading_basis'))]
         pairs[f'{right} minus {left}'] = {
-            **{field: paired_summary([b[field] - a[field] for a, b in joined])
+            **{field: paired_summary([b[field] - a[field] for a, b in joined], strata=strata)
                for field in ('task_score', 'schema_evidence_valid', 'review_flag_correct')},
             'per_task': {task: paired_summary([b['task_score'] - a['task_score'] for a, b in joined
                                               if a['task'] == task]) for task in plan.schemas},
             'changed_cases': changes,
         }
-    from .quality import regression_gate
-    for stage, report in runs.items():
-        report['case_scores'] = {r['scenario_id']: {'task': r['task'], 'score': r['task_score']}
-                                 for r in rows_by_stage[stage]}
-    safety = regression_gate(runs['initial'], runs['sft'], quality)
-    comparison = pairs['sft minus initial']['task_score']
-    delta = comparison['delta']
-    validity_ok = runs['sft']['schema_evidence_valid_rate'] >= thresholds['schema_evidence_valid_rate']
-    review_ok = runs['sft']['review_flag_correct_rate'] >= runs['initial']['review_flag_correct_rate']
-    unsupported_ok = runs['sft']['unsupported_claims'] <= runs['initial']['unsupported_claims']
-    decision = {
-        'outcome': ('better_within_development_gate' if comparison['conservative_95pct_ci'][0] > 0
-                    and safety['accepted'] and validity_ok and review_ok and unsupported_ok else
-                    'equal_observed' if delta == 0 else 'worse_observed' if delta < 0 else 'inconclusive'),
-        'validity_threshold_met': validity_ok, 'review_flags_nonregressing': review_ok,
-        'unsupported_claim_count_nonincreasing': unsupported_ok, 'task_regression_gate': safety,
-        'continuation': 'paused_pending_user_acceptance_of_semantic_result_and_explicit_authorization',
-    }
-    if decision['outcome'] != 'better_within_development_gate':
-        decision['investigate'] = ['training data correctness and representativeness', 'student assessment selection',
-                                   'review flags and task labels', 'benchmark and judge consistency',
-                                   'training and held-out loss', 'learning rate, optimizer and masking']
+    decision = diagnostic_decision(runs['initial'], runs['sft'], pairs['sft minus initial']['task_score'],
+                                   quality, quality_target=thresholds['schema_evidence_valid_rate'])
     result = {'identity': identity, 'scoring': judge.version, 'scope': 'development synthetic silver',
               'runs': runs, 'paired': pairs, 'diagnostic_decision': decision}
     atomic_json(store.path('semantic_comparison.json'), result)
@@ -227,17 +217,19 @@ def run(comparison_dir, split, output, *, corpus=CORPUS, schemas_path=SCHEMAS,
     prior = historical_judgments(historical_run, cases, generations) if historical_run else {}
     with store.lock():
         plan = JudgmentPlan(store.path('semantic_cache'), schemas, settings, legacy_caches, prior)
-        keys = {stage: [plan.inspect(item, prediction)
-                        for item, prediction in zip(cases, predictions, strict=True)]
-                for stage, predictions in generations.items()}
-        references = {key for values in keys.values() for key in values if key is not None}
-        tasks = {}
-        for stage, values in keys.items():
+        inspected = {stage: [plan.inspect(item, prediction)
+                             for item, prediction in zip(cases, predictions, strict=True)]
+                     for stage, predictions in generations.items()}
+        references = {key for values in inspected.values() for key, _ in values if key is not None}
+        tasks, measured = {}, {}
+        for stage, values in inspected.items():
             counts = Counter(locally_scored=0, cache_hits=0, missing_judgments=0)
-            for key in values:
+            for key, _ in values:
                 counts['locally_scored' if key is None else 'cache_hits' if key in plan.cached
                        else 'missing_judgments'] += 1
             tasks[stage] = dict(counts)
+            measured[stage] = {'schema_evidence_valid_rate': mean(valid for _, valid in values),
+                               'incomplete_generation_rate': mean(map(incomplete_prediction, generations[stage]))}
         identity = {
             'split_sha256': digest(json.loads(split.read_text())), 'comparison_manifest_sha256': digest(manifest),
             'development_sha256': digest(cases), 'holdout_sha256': digest(holdout),
@@ -259,6 +251,7 @@ def run(comparison_dir, split, output, *, corpus=CORPUS, schemas_path=SCHEMAS,
             'identity': identity, 'scoring': SemanticJudge.version, 'judge_model': settings['model'],
             'judge_provider': settings['provider'], 'request_rates_usd_per_million': list(RATES[settings['provider'], settings['model']]),
             'pricing_source': PRICING_SOURCE, 'per_checkpoint': tasks,
+            'measured_without_judging': measured,
             'unique_cache_hits': len(references & plan.cached.keys()),
             'unique_missing_judgments': len(plan.pending), 'max_attempts_per_judgment': attempts,
             'max_remaining_requests': attempts * len(plan.pending),

@@ -91,3 +91,36 @@ score by 16.7 points. An overall one-point change is also weak evidence with
 108 cases. The release report uses paired intervals clustered by source
 family. Stronger claims require a larger independently validated or
 human-reviewed benchmark.
+
+## Interpreting the experimental result
+
+The diagnostic reports observed changes, effect size, paired bootstrap and
+Hoeffding intervals, and safety decisions separately. A confidence interval
+crossing zero leaves the result inconclusive. With explicit authorization,
+an inconclusive result can qualify for a controlled experiment if its hard
+safety checks pass. The default experimental limits are 94% validity, a
+decline of at most 1.5 percentage points, and at most 3% incomplete generations.
+Task declines of 5 points trigger a warning. A 15-point decline on any task,
+or declines of at least 10 points on more than three tasks, fail the gate.
+Newly observed unsupported claims and missed required review flags fail the
+gate even when a statistical regression is inconclusive. The quality target
+remains 98% validity. Synthetic scores cannot authorize release.
+
+For optional judge reproducibility, `python3 -m distillation_loop.judge_reproducibility
+plan --comparison-dir <saved-comparison> --split <evaluation_split.json>
+--output <plan.json>` prepares the SFT development cases requiring judgment
+and the cost ceiling for each of two medium-effort and two zero-temperature
+none-effort repetitions. Use `--medium-only` when none is unsupported. Each
+arm and repetition uses distinct cache keys. The offline `analyze` action
+takes `--plan`, `--judgments`, and `--output` and reports score changes,
+agreement, decision flips, cost, and latency. Judgment JSONL rows need
+`arm`, `scenario_id`, `cache_key`, `judgment`, `cost_usd`, and
+`latency_seconds`. Both actions run offline. The experiment still needs
+separately authorized collection of independent judgments. Use human-reviewed
+labels to assess correctness before changing judge settings.
+
+When supplying loss candidates, also provide any earlier training or screening
+run directories beyond the original run. Use repeatable `--exposure-root`
+arguments or the loop config's `historical_exposure_roots` list. When a saved
+screening receipt refers to an unavailable scenario record, split creation
+fails rather than assuming the candidate is independent.

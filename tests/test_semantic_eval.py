@@ -56,9 +56,11 @@ class SemanticReplayTests(unittest.TestCase):
             parent.assert_not_called()
         self.assertEqual(report['max_additional_usd'], '0')
         self.assertEqual(report['unique_missing_judgments'], 0)
+        self.assertEqual(report['measured_without_judging']['sft'],
+                         {'schema_evidence_valid_rate': 1, 'incomplete_generation_rate': 0})
         comparison = json.loads((self.output / 'semantic_comparison.json').read_text())
         self.assertEqual(comparison['runs']['sft']['macro_task_score'], 1)
-        self.assertEqual(comparison['diagnostic_decision']['outcome'], 'equal_observed')
+        self.assertEqual(comparison['diagnostic_decision']['outcome'], 'inconclusive')
 
     def test_rejects_bad_hash_and_incomplete_predictions(self):
         manifest = json.loads(self.split.read_text())
@@ -71,3 +73,28 @@ class SemanticReplayTests(unittest.TestCase):
         self.write_predictions('sft', [])
         with self.assertRaisesRegex(ValueError, 'Incomplete Pass A'):
             run(self.root, self.split, self.output)
+
+    def test_missing_judgment_requires_matching_approval_and_sufficient_cap(self):
+        from distillation_loop.review import grade_reviewed
+
+        predictions = [{'raw': json.dumps(item['reference']), 'truncated': False}
+                       for item in self.development]
+        for i, item in enumerate(self.development):
+            if isinstance(item['reference'].get('answer'), str):
+                response = {**item['reference'], 'answer': item['reference']['answer'] + ' Additional text.'}
+                candidate = {'raw': json.dumps(response), 'truncated': False}
+                if grade_reviewed(item, candidate, self.schemas, {})[0] is None:
+                    predictions[i] = candidate
+                    break
+        else:
+            self.fail('Fixture needs one valid prediction requiring a judge')
+        self.write_predictions('sft', predictions)
+        with patch('distillation_loop.semantic_eval.create_parent') as parent:
+            report = run(self.root, self.split, self.output)
+            self.assertEqual(report['unique_missing_judgments'], 1)
+            self.assertFalse((self.output / 'semantic_comparison.json').exists())
+            with self.assertRaisesRegex(ValueError, 'Approval does not match'):
+                run(self.root, self.split, self.output, approval='old', max_usd='100')
+            with self.assertRaisesRegex(ValueError, 'cap must cover'):
+                run(self.root, self.split, self.output, approval=report['approval_hash'], max_usd='0')
+            parent.assert_not_called()

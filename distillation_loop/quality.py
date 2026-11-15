@@ -31,11 +31,14 @@ def regression_gate(baseline, candidate, settings):
 def promotion_gate(baseline, candidate, settings, thresholds, tasks):
     from .core import satisfactory
     result = regression_gate(baseline, candidate, settings)
+    hard = operational_gate(baseline, candidate, settings, require_case_evidence=False)
+    result['operational_safety'] = hard
+    result['no_observed_high_risk_errors'] = not any(hard['safety_events'].values())
     improvement = candidate['macro_task_score'] - baseline['macro_task_score']
     result.update(macro_improvement=improvement,
                   thresholds_met=satisfactory(candidate, thresholds, tasks))
-    result['accepted'] = (result['accepted'] and result['thresholds_met']
-                          and improvement + 1e-12 >= settings.get('minimum_macro_improvement', 0.01))
+    result['accepted'] = (result['accepted'] and hard['accepted'] and result['no_observed_high_risk_errors']
+                          and result['thresholds_met'] and improvement + 1e-12 >= settings.get('minimum_macro_improvement', 0.01))
     return result
 
 
@@ -60,7 +63,7 @@ def validate_quality_settings(config, tasks=None):
     settings = config.get('quality', {})
     allowed = {'max_task_regression', 'per_task_max_regression', 'minimum_macro_improvement',
                'minimum_new_pair_fraction', 'minimum_deterministic_check_rate', 'deterministic_template_fraction',
-               'paired_regression_alpha'}
+               'paired_regression_alpha', 'experimental_safety'}
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise ValueError('Unknown quality setting')
     for name in ('max_task_regression', 'minimum_macro_improvement', 'minimum_new_pair_fraction', 'minimum_deterministic_check_rate', 'deterministic_template_fraction'):
@@ -80,4 +83,145 @@ def validate_quality_settings(config, tasks=None):
     for value in overrides.values():
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError('Invalid task regression tolerance')
+    experimental_limits(settings)
     return settings
+
+
+EXPERIMENTAL_LIMITS = {
+    'minimum_validity': .94,
+    'maximum_validity_decline': .015,
+    'maximum_incomplete_rate': .03,
+    'task_warning': .05,
+    'single_task_rejection': .15,
+    'multiple_task_rejection': .10,
+    'maximum_regressing_tasks': 3,
+}
+
+
+def experimental_limits(settings):
+    overrides = settings.get('experimental_safety', {})
+    if not isinstance(overrides, dict) or set(overrides) - EXPERIMENTAL_LIMITS.keys():
+        raise ValueError('Unknown experimental safety limit')
+    limits = {**EXPERIMENTAL_LIMITS, **overrides}
+    for key, value in limits.items():
+        if key == 'maximum_regressing_tasks':
+            if type(value) is not int or value < 0:
+                raise ValueError(f'Invalid experimental safety limit {key}')
+        elif type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError(f'Invalid experimental safety limit {key}')
+    return limits
+
+
+def operational_gate(comparator, candidate, settings, *, require_case_evidence=True):
+    """Reject observed safety regressions independently of sample significance."""
+    from .core import validate_report
+
+    limits = experimental_limits(settings)
+    for summary in (comparator, candidate):
+        validate_report(summary, comparator['per_task'], 1)
+    before, after = comparator.get('case_scores', {}), candidate.get('case_scores', {})
+    flags = ('valid', 'incomplete', 'unsupported_claims', 'missed_required_review')
+    complete = bool(before and after) and all(
+        type(row.get(flag)) is bool for rows in (before, after) for row in rows.values() for flag in flags)
+    if comparator['per_task'].keys() != candidate['per_task'].keys():
+        raise ValueError('Operational safety requires the same evaluation tasks')
+    if before.keys() != after.keys() or any(row['task'] != before[key]['task'] for key, row in after.items()):
+        raise ValueError('Operational safety requires the same paired cases and tasks')
+    for field in ('benchmark_hash', 'scoring', 'evaluation_protocol'):
+        if comparator.get(field) != candidate.get(field):
+            raise ValueError(f'Operational safety requires matching {field}')
+    if require_case_evidence and not complete:
+        raise ValueError('Operational safety requires complete per-case safety evidence')
+    if complete:
+        for summary, rows in ((comparator, before), (candidate, after)):
+            counts = Counter(row['task'] for row in rows.values())
+            totals = Counter()
+            for row in rows.values():
+                if type(row['score']) not in (float, int) or not 0 <= row['score'] <= 1:
+                    raise ValueError('Invalid per-case score for operational safety')
+                totals[row['task']] += row['score']
+            if (counts != summary['examples_per_task'] or counts.keys() != summary['per_task'].keys()
+                    or any(abs(totals[t] / counts[t] - summary['per_task'][t]) > 1e-9 for t in counts)
+                    or abs(sum(row['valid'] for row in rows.values()) / len(rows)
+                           - summary['schema_evidence_valid_rate']) > 1e-9):
+                raise ValueError('Per-case safety evidence disagrees with score summary')
+
+    declines = {t: value - candidate['per_task'][t] for t, value in comparator['per_task'].items()}
+
+    def declining(limit):
+        return {t: drop for t, drop in declines.items() if drop > 0 and drop + 1e-12 >= limit}
+
+    def losses(tasks):
+        return sorted(key for key, row in after.items()
+                      if row['task'] in tasks and row['score'] < before[key]['score'])
+
+    reasons = []
+    def reject(code, cases, **details):
+        reasons.append({'code': code, 'cases': sorted(cases), **details})
+
+    validity = candidate['schema_evidence_valid_rate']
+    decline = comparator['schema_evidence_valid_rate'] - validity
+    if validity + 1e-12 < limits['minimum_validity']:
+        reject('validity_below_floor', (k for k, row in after.items() if row.get('valid') is False), rate=validity)
+    if decline > limits['maximum_validity_decline'] + 1e-12:
+        reject('validity_decline', (k for k, row in after.items() if not row.get('valid', True)
+                                    and before[k].get('valid')), decline=decline)
+    incomplete = [k for k, row in after.items() if row.get('incomplete')]
+    incomplete_rate = len(incomplete) / len(after) if complete else None
+    if incomplete_rate is not None and incomplete_rate > limits['maximum_incomplete_rate'] + 1e-12:
+        reject('incomplete_generation', incomplete, rate=incomplete_rate)
+    single = declining(limits['single_task_rejection'])
+    if single:
+        reject('single_task_regression', losses(single), tasks=single)
+    multiple = declining(limits['multiple_task_rejection'])
+    if len(multiple) > limits['maximum_regressing_tasks']:
+        reject('multiple_task_regression', losses(multiple), tasks=multiple)
+    for field, reason in [('unsupported_claims', 'new_unsupported_claim'),
+                          ('missed_required_review', 'new_missed_required_review')]:
+        introduced = [k for k, row in after.items() if row.get(field) and not before[k].get(field)]
+        if introduced:
+            reject(reason, introduced)
+    return {'accepted': not reasons, 'reasons': reasons, 'limits': limits,
+            'incomplete_rate': incomplete_rate, 'case_evidence_complete': complete,
+            'task_regression_warnings': declining(limits['task_warning']),
+            'safety_events': {field: sorted(k for k, row in after.items() if row.get(field))
+                              for field in flags[2:]}}
+
+
+def diagnostic_decision(comparator, candidate, paired, settings, *, quality_target=.98):
+    safety = operational_gate(comparator, candidate, settings)
+    statistical = regression_gate(comparator, candidate, settings)
+    delta = paired['delta']
+    practical_limit = settings.get('minimum_macro_improvement', .01)
+    lower, upper = (paired['bootstrap_95pct_ci'] if 'bootstrap_95pct_ci' in paired
+                    else paired['conservative_95pct_ci'])
+    measured = candidate['macro_task_score'] - comparator['macro_task_score']
+    if (not all(type(value) in (int, float) and math.isfinite(value) for value in (delta, lower, upper))
+            or not -1 <= lower <= upper <= 1 or abs(measured - delta) > 1e-9):
+        raise ValueError('Invalid paired change or confidence interval')
+    outcome = ('positive_interval' if lower > 0 and delta > 0 else
+               'negative_interval' if upper < 0 and delta < 0 else 'inconclusive')
+    return {'outcome': outcome, 'observed_macro_change': delta,
+            'practical_effect_threshold': practical_limit, 'practical_gain_observed': delta >= practical_limit,
+            'quality_target': quality_target,
+            'quality_target_met': candidate['schema_evidence_valid_rate'] >= quality_target,
+            'operational_safety': safety, 'statistical_regression': statistical,
+            'experimental_continuation_eligible': safety['accepted'] and outcome != 'negative_interval',
+            'experimental_promotion_eligible': (safety['accepted'] and statistical['accepted']
+                                                and delta >= practical_limit and delta > 0),
+            'release_eligible': False,
+            'continuation': 'requires_explicit_authorization'}
+
+
+def require_experimental_result(result, quality):
+    """Recompute the pre-training decision using the active safety limits."""
+    try:
+        before, after = (result['runs'][stage] for stage in ('initial', 'sft'))
+        paired = result['paired']['sft minus initial']['task_score']
+    except (KeyError, TypeError) as exc:
+        raise ValueError('Semantic SFT-only result requires investigation or a fresh diagnostic report') from exc
+    decision = diagnostic_decision(before, after, paired, quality)
+    if not decision['experimental_continuation_eligible']:
+        codes = ', '.join(reason['code'] for reason in decision['operational_safety']['reasons'])
+        raise ValueError(f'Semantic SFT-only result requires investigation before training: {codes or decision["outcome"]}')
+    return decision

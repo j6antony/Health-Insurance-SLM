@@ -86,21 +86,67 @@ def historical_records(path, schemas):
     return [exclusion_record(row) for row in pairs], plan['hash']
 
 
-def freeze_loss_split(output, historical_plan, benchmarks, schemas, *, candidates_path=None, target=50):
+def historical_exposures(roots, historical):
+    """Resolve training and student-screening records from the supplied run journals."""
+    exposed = {}
+    def add(record):
+        exposed.setdefault(record['id'], {})[digest(record)] = record
+
+    for record in historical:
+        add(record)
+    for root in roots:
+        known = {row['id']: row for row in read_jsonl(root / 'self_instruct/accepted_scenarios.jsonl')}
+        for path in sorted(root.glob('round_*/training_plan.json')):
+            plan = json.loads(path.read_text())
+            rows = plan['pairs']
+            if plan['hash'] != digest([rows, plan['diagnostics']] if 'diagnostics' in plan else rows):
+                raise ValueError(f'Stale historical training plan at {path}')
+            for row in rows:
+                add(exclusion_record(row))
+        for path in sorted(root.glob('round_*/corrections/*.json')):
+            add(json.loads(path.read_text())['scenario'])
+        for path in sorted(root.glob('round_*/student_responses.jsonl')):
+            for row in read_jsonl(path):
+                key = row['scenario_id']
+                expected = row['scenario_hash']
+                if expected in exposed.get(key, {}):
+                    continue
+                record = known.get(key)
+                if record is None or digest(record) != expected:
+                    raise ValueError(f'Missing historical scenario {key} referenced by {path}')
+                add(record)
+    return [record for variants in exposed.values() for record in variants.values()]
+
+
+def freeze_loss_split(output, historical_plan, benchmarks, schemas, *, candidates_path=None,
+                      target=50, exposure_roots=()):
     historical, history_hash = historical_records(historical_plan, schemas)
-    historical_registry = ExclusionRegistry(historical)
-    benchmark_registry = ExclusionRegistry(benchmarks)
     if type(target) is not int or target < 1:
         raise ValueError('Held-out loss target must be a positive integer')
     if candidates_path is not None and not candidates_path.is_file():
         raise ValueError(f'Missing verified teacher candidates at {candidates_path}')
     candidates = read_jsonl(candidates_path) if candidates_path is not None else []
+    historical_root = historical_plan.parent
+    if historical_root.name == 'round_01':
+        historical_root = historical_root.parent
+    roots = (historical_root, *exposure_roots)
+    if candidates and any(not root.is_dir() for root in roots):
+        raise ValueError('An earlier student-screening run directory is missing')
+    exposed = historical_exposures(roots, historical) if candidates else historical
+    historical_registry = ExclusionRegistry(exposed)
+    benchmark_registry = ExclusionRegistry(benchmarks)
     identity = {'historical_plan_sha256': history_hash, 'benchmark_sha256': digest(benchmarks),
                 'candidates_sha256': digest(candidates), 'schema_sha256': digest(schemas), 'target': target}
+    if candidates:
+        identity['historical_exposures_sha256'] = digest(sorted(digest(row) for row in exposed))
     if output.exists():
         saved = json.loads(output.read_text())
-        if saved['identity'] != identity or saved['split_sha256'] != digest(saved['rows']):
+        original_identity = {key: value for key, value in identity.items() if key != 'historical_exposures_sha256'}
+        if (saved['identity'] not in (identity, original_identity)
+                or saved['split_sha256'] != digest(saved['rows'])):
             raise ValueError('Frozen teacher-loss split identity changed')
+        # Older manifests can be read without changing them. Always recheck
+        # their frozen rows against the expanded exposure registry below.
         for registry in (historical_registry, benchmark_registry):
             registry.require_clean((row['record'] for row in saved['rows']), 'frozen teacher-loss split')
         return saved
@@ -175,6 +221,7 @@ def main():
     parser.add_argument('--split', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--candidates', type=Path)
+    parser.add_argument('--exposure-root', type=Path, action='append', default=[])
     parser.add_argument('--corpus', type=Path, default=CORPUS)
     parser.add_argument('--schemas', type=Path, default=SCHEMAS)
     args = parser.parse_args()
@@ -184,7 +231,7 @@ def main():
     with store.lock():
         result = freeze_loss_split(store.path('heldout_teacher_loss_split.json'),
                                    args.training_plan, development + holdout, schemas,
-                                   candidates_path=args.candidates)
+                                   candidates_path=args.candidates, exposure_roots=args.exposure_root)
     print(json.dumps({key: value for key, value in result.items() if key != 'rows'}, indent=2))
 
 

@@ -16,7 +16,8 @@ from .evaluation import LightevalEvaluator
 from .benchmarks import load_benchmarks, load_fixed_validation, comparison
 from .review import SCORING_VERSION
 from .trusted_templates import TEMPLATE_VERSION
-from .quality import validate_quality_settings, regression_gate, promotion_gate, training_coverage
+from .quality import (operational_gate, promotion_gate, regression_gate, require_experimental_result,
+                      training_coverage, validate_quality_settings)
 from .leakage import ExclusionRegistry, freeze_loss_split, validate_frozen_training_records
 from .semantic import SemanticJudge
 from .student import infer_payloads
@@ -69,8 +70,7 @@ def run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapte
         if not semantic_result or continuation_authorized is not True:
             raise ValueError('Stage 2 stop: supply the saved semantic result and authorize continuation')
         decision = json.loads(Path(semantic_result).read_text())
-        if decision.get('diagnostic_decision', {}).get('outcome') != 'better_within_development_gate':
-            raise ValueError('Semantic SFT-only result requires investigation before training optimization')
+        decision = {**decision, 'diagnostic_decision': require_experimental_result(decision, config.get('quality', {}))}
         from self_instruct_pipeline.budget import ACTIVE_BUDGET
         if ACTIVE_BUDGET.get() is None:
             raise ValueError('The revised semantic loop requires an active cumulative API budget')
@@ -95,6 +95,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
         settings_hash = digest([settings_hash, SemanticJudge.version])
     state_path = store.path('loop_state.json')
     saved_split = config['evaluation'].get('split_path')
+    semantic_scoring = bool(config['evaluation'].get('semantic_judge'))
     release_path = store.path('release/intent.json')
     quality = validate_quality_settings(config, schemas)
     adaptive = config.get('student_conditioned_training', False)
@@ -107,8 +108,13 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
     def passed(report):
         return satisfactory(report, config['thresholds'], schemas)
 
-    def rank(report):
-        return passed(report), report['macro_task_score'], report['minimum_task_score']
+    def unused_path(path):
+        if not path.exists():
+            return path
+        number = 2
+        while path.with_name(f'{path.name}-retry-{number:02d}').exists():
+            number += 1
+        return path.with_name(f'{path.name}-retry-{number:02d}')
 
     with store.lock():
         reviewed, final_test = load_benchmarks(config, schemas)
@@ -125,6 +131,15 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     or identity.get('schema_sha256') != digest(schemas)
                     or decision.get('scoring') != SemanticJudge.version):
                 raise ValueError('Semantic decision does not match the benchmark, schema, and rubric')
+            expected_cases = {item['record']['id']: item['record']['task'] for item in development}
+            for stage in ('initial', 'sft'):
+                report = decision['runs'][stage]
+                if (report.get('benchmark_hash') != identity['development_sha256']
+                        or report.get('scoring') != SemanticJudge.version
+                        or report.get('evaluation_protocol') != identity.get('comparison_manifest_sha256')
+                        or {key: row['task'] for key, row in report['case_scores'].items()} != expected_cases):
+                    raise ValueError('Semantic decision does not contain the complete frozen development comparison')
+
         if final_test and config['evaluation']['mode'] == 'fixed':
             manifest_path = store.path('evaluation_split.json')
             if saved_split:
@@ -149,7 +164,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             loss_split = freeze_loss_split(
                 store.path('heldout_teacher_loss_split.json'), resolve_path(config['historical_training_plan']),
                 development + final_test, schemas,
-                candidates_path=resolve_path(candidates) if candidates else None)
+                candidates_path=resolve_path(candidates) if candidates else None,
+                exposure_roots=[resolve_path(root) for root in config.get('historical_exposure_roots', ())])
             registry = ExclusionRegistry(development + final_test + loss_split['rows'])
             validate_frozen_training_records(store, registry)
         if evaluate_release and saved_split and (state is None or state['status'] == 'running'):
@@ -174,12 +190,13 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             if initial_adapter is not None:
                 print('Initializing from the GitHub release adapter.', flush=True)
                 runtime.restore(initial_adapter)
-            initial = runtime.save_checkpoint(store.path('initial_adapter'))
+            initial = runtime.save_checkpoint(unused_path(store.path('initial_adapter')))
             state = {
                 'settings_hash': settings_hash, 'development_hash': digest(development),
                 'test_hash': digest(final_test),
                 'completed_rounds': 0, 'history': [], 'status': 'running', 'round_limit': limit,
                 'initial_checkpoint': initial, 'last_checkpoint': initial, 'best_checkpoint': initial,
+                'next_round_start_checkpoint': initial,
                 'best_report': None, 'latest_report': None, 'latest_checkpoint': initial,
                 'provisional_best_checkpoint': None,
                 **({'release_checkpoint': None} if saved_split else {}),
@@ -264,6 +281,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                                                [item['source_group'] for item, _ in subset])
             atomic_json(output, {'identity': identity, **comparison(reports['initial'], reports['selected']),
                                  'paired': paired, 'per_task_paired': per_task, 'release_checkpoint': None,
+                                 'release_eligible': False,
                                  'reference_status': 'synthetic silver; independent release evidence required',
                                  'limitations': ['Six cases per task; one case changes the task score by up to 16.7 points.',
                                                  '108 cases cannot reliably establish a one-point overall gain.',
@@ -273,8 +291,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             if saved_split:
                 if evaluate_release:
                     controlled_release()
-                runtime.restore(state.get('release_checkpoint') or state.get('provisional_best_checkpoint')
-                                or state['best_checkpoint'])
+                runtime.restore(state.get('release_checkpoint') or state['best_checkpoint'])
                 return state
             reviewed_test = config['evaluation']['mode'] == 'reviewed'
             if final_test and 'final_comparison' not in state:
@@ -307,12 +324,17 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             return state
 
         print('Restoring student adapter (local).', flush=True)
-        runtime.restore(state['last_checkpoint'])
+        # Legacy runs may have saved the latest candidate as last_checkpoint.
+        # The accepted best is the sole source of truth for a training resume.
+        if state.get('next_round_start_checkpoint', state['best_checkpoint']) != state['best_checkpoint']:
+            raise ValueError('Next-round checkpoint disagrees with the accepted best')
+        state.update(next_round_start_checkpoint=state['best_checkpoint'], last_checkpoint=state['best_checkpoint'])
+        runtime.restore(state['next_round_start_checkpoint'])
         if state['status'] != 'running':
             return finalize()
 
         # Evaluate once before training. A successful baseline needs no training.
-        if state['latest_report'] is None:
+        if state.get('baseline_report') is None:
             print(f'Starting baseline evaluation on {len(development)} examples.', flush=True)
             evaluator.checkpoint_identity = state['initial_checkpoint']
             report = evaluator.evaluate(development, store.path('baseline'))
@@ -325,6 +347,24 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             atomic_json(state_path, state)
             if stop_on_thresholds and passed(report):
                 return finalize()
+
+        best_report = state['best_report']
+        if best_report.get('benchmark_hash') and 'evaluation_protocol' not in best_report:
+            # Recover safety metadata from frozen generations and judgments in
+            # the accepted checkpoint's original evaluation directory.
+            best = state['best_checkpoint']
+            if best == state['initial_checkpoint']:
+                folder = store.path('baseline')
+            else:
+                entry = next(row for row in state['history'] if row['checkpoint'] == best)
+                folder = store.path(f"round_{entry['round']:02d}/lighteval")
+            if not (folder / 'generation.json').is_file():
+                raise ValueError('Missing frozen predictions for the accepted checkpoint')
+            evaluator.checkpoint_identity = best
+            refreshed = evaluator.evaluate(development, folder)
+            validate_report(refreshed, schemas, config['development_examples_per_task'])
+            state['best_report'] = refreshed
+            atomic_json(state_path, state)
 
         exclusions = development + final_test
         if saved_split:
@@ -351,7 +391,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
 
                 # 1. Build toward a cumulative VERIFIED-pair target, replacing failures.
                 candidate_feedback = state.get('curriculum_feedback', {})
-                feedback_report = state['latest_report']
+                feedback_report = state['best_report']
                 if adaptive:
                     scores = {task: 1 - stats['candidates_with_errors'] / stats['attempts']
                               for task, stats in candidate_feedback.items()
@@ -384,7 +424,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                         if registry is not None:
                             registry.require_clean(records, 'student-conditioned screening')
                         return save_predictions(student, records, schemas, folder,
-                                                checkpoint=state['last_checkpoint'])
+                                                checkpoint=state['next_round_start_checkpoint'])
 
                     pairs, diagnostics = adaptive_pairs(
                         data, runtime, directory, state, config, weights, previous_pairs, predict)
@@ -441,7 +481,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
 
                 # 4. Train the existing student adapter, then evaluate it.
                 trained_path = directory / 'training_complete.json'
-                training_hash = digest({'pairs': pairs, 'initial': state['last_checkpoint'],
+                training_hash = digest({'pairs': pairs, 'initial': state['next_round_start_checkpoint'],
                                         'training': config['training'], 'student': runtime.identity()})
                 sft_receipt = directory / 'sft_complete.json'
                 loss_path = directory / 'heldout_teacher_loss.json'
@@ -454,14 +494,14 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     if loss_split is None:
                         return
                     identity = {'split_sha256': loss_split['split_sha256'], 'training_sha256': training_hash,
-                                'before_checkpoint': state['last_checkpoint'], 'after_sft_checkpoint': sft_checkpoint}
+                                'before_checkpoint': state['next_round_start_checkpoint'], 'after_sft_checkpoint': sft_checkpoint}
                     if loss_path.exists():
                         if json.loads(loss_path.read_text())['identity'] != identity:
                             raise ValueError('Held-out loss belongs to different inputs')
                         return
                     baseline, after = None, None
                     if loss_inputs:
-                        runtime.restore(state['last_checkpoint'])
+                        runtime.restore(state['next_round_start_checkpoint'])
                         baseline = runtime.completion_loss(loss_inputs, schemas)
                         runtime.restore(sft_checkpoint)
                         after = runtime.completion_loss(loss_inputs, schemas)
@@ -488,19 +528,25 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                             raise ValueError('Saved SFT inputs changed')
                         checkpoint = sft['checkpoint']
                     else:
-                        checkpoint = runtime.train(pairs, schemas, directory / 'sft')
+                        destination = directory / 'sft'
+                        if (destination / 'adapter').exists():
+                            destination = unused_path(destination)
+                        checkpoint = runtime.train(pairs, schemas, destination)
                         atomic_json(sft_receipt, {'checkpoint': checkpoint, 'training_hash': training_hash})
                     record_loss(checkpoint)
                     if preferences:
                         runtime.restore(checkpoint)
-                        checkpoint = runtime.train_preferences(
-                            new_pairs, diagnostics['preference_pairs'], schemas, directory / 'preference')
+                        destination = directory / 'preference'
+                        if (destination / 'adapter').exists():
+                            destination = unused_path(destination)
+                        checkpoint = runtime.train_preferences(new_pairs, preferences, schemas, destination)
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
                     print(f'Checkpoint saved: {checkpoint}', flush=True)
                 if state.get('latest_checkpoint') != checkpoint:
-                    state['latest_checkpoint'] = checkpoint
+                    state.update(latest_checkpoint=checkpoint, latest_report=None)
                     atomic_json(state_path, state)
-                if os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1':
+                if (os.environ.get('DISTILLATION_DRIVE_BACKUP') == '1'
+                        or (semantic_scoring and os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1')):
                     from .drive_backup import save_drive_adapter
                     save_drive_adapter(checkpoint, store.directory, round_id)
                 elif os.environ.get('GITHUB_ADAPTER_UPLOAD') == '1':
@@ -512,30 +558,50 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
 
-                # Save only completed rounds. An interrupted round restarts from
-                # the previous completed adapter when this function is rerun.
+                comparator = state['best_report']
+                comparator_checkpoint = state['best_checkpoint']
+                hard = operational_gate(comparator, report, quality, require_case_evidence=semantic_scoring)
+                statistical = regression_gate(comparator, report, quality)
+                improvement = report['macro_task_score'] - comparator['macro_task_score']
+                minimum_gain = quality.get('minimum_macro_improvement', .01) if semantic_scoring else 0
+                better = improvement > 1e-12 and improvement + 1e-12 >= minimum_gain
+                promoted = hard['accepted'] and statistical['accepted'] and better
+                reasons = list(hard['reasons'])
+                if not statistical['accepted']:
+                    losses = statistical.get('confirmed_regressions', statistical['regressions_exceeding_tolerance'])
+                    reasons.append({'code': 'task_regression_screen', 'tasks': losses,
+                                    'cases': sorted(key for key, row in report.get('case_scores', {}).items()
+                                                    if row['task'] in losses and row['score'] <
+                                                    comparator['case_scores'][key]['score'])})
+                if not better:
+                    reasons.append({'code': 'insufficient_macro_gain', 'observed': improvement,
+                                    'minimum': minimum_gain,
+                                    'cases': sorted(key for key, row in report.get('case_scores', {}).items()
+                                                    if row['score'] < comparator['case_scores'][key]['score'])})
+                selection = {'comparator_checkpoint': comparator_checkpoint, 'promoted': promoted,
+                             'operational_safety': hard, 'statistical_regression': statistical,
+                             'macro_improvement': improvement, 'minimum_macro_improvement': minimum_gain,
+                             'quality_target_met': passed(report), 'release_eligible': False,
+                             'reasons': reasons}
+                if promoted:
+                    state.update(best_report=report, best_checkpoint=checkpoint)
+                    if passed(report):
+                        state.update(provisional_best_checkpoint=checkpoint, provisional_best_report=report)
+                next_checkpoint = state['best_checkpoint']
                 state.update({key: value for key, value in diagnostics.items() if key != 'preference_pairs'})
                 state.update(trained_scenario_ids=training_ids, completed_rounds=round_id,
-                             last_checkpoint=checkpoint, latest_checkpoint=checkpoint, latest_report=report)
-                validation_safety = regression_gate(state['baseline_report'], report, quality)
-                state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report, 'regression_gate': validation_safety, 'coverage': coverage})
-                if validation_safety['accepted'] and rank(report) > rank(state['best_report']):
-                    state.update(best_report=report, best_checkpoint=checkpoint)
-                if validation_safety['accepted'] and passed(report):
-                    provisional_report = state.get('provisional_best_report')
-                    if provisional_report is None or rank(report) > rank(provisional_report):
-                        state.update(provisional_best_checkpoint=checkpoint, provisional_best_report=report)
-                if config.get('rollback_on_regression') and not validation_safety['accepted']:
-                    state['last_checkpoint'] = state['best_checkpoint']
-                    runtime.restore(state['last_checkpoint'])
-                if 'case_scores' in report:
+                             last_checkpoint=next_checkpoint, next_round_start_checkpoint=next_checkpoint,
+                             latest_checkpoint=checkpoint, latest_report=report)
+                state['history'].append({'round': round_id, 'checkpoint': checkpoint, 'scores': report,
+                                         'regression_gate': statistical, 'selection': selection, 'coverage': coverage})
+                if 'case_scores' in report and 'case_scores' in state['baseline_report']:
                     baseline_cases = state['baseline_report']['case_scores']
                     atomic_json(directory / 'paired_case_changes.json', {
                         case_id: {**row, 'baseline': baseline_cases[case_id]['score']}
                         for case_id, row in report['case_scores'].items()
                         if row['score'] != baseline_cases[case_id]['score']
                     })
-                if stop_on_thresholds and passed(report) and validation_safety['accepted']:
+                if stop_on_thresholds and promoted and passed(report):
                     state['status'] = 'thresholds_met'
                 elif round_id == limit:
                     state['status'] = 'max_rounds_reached'
@@ -545,6 +611,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                       f"best {state['best_report']['macro_task_score']:.3f} | {state['status']}", flush=True)
                 if state['status'] != 'running':
                     break
+                runtime.restore(state['next_round_start_checkpoint'])
         finally:
             data.close()
 

@@ -6,7 +6,7 @@ from importlib.metadata import version
 
 from self_instruct_pipeline.persistence import atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
-from .core import aggregate_scores, score_response
+from .core import aggregate_scores, clean_response, score_response
 from .student import infer_payloads
 from .review import grade_reviewed, review_key, ReviewRequired, SCORING_VERSION
 
@@ -37,6 +37,30 @@ def make_metric():
         corpus_level_fn={'task_score':statistics.mean, 'schema_evidence_valid':statistics.mean})
 
 
+def incomplete_prediction(prediction):
+    return bool(prediction['truncated'] or prediction.get('error')
+                or prediction.get('stop_reason') in {'token_limit', 'repetition', 'context_budget'})
+
+
+def safety_case(item, prediction, scores):
+    valid = scores['schema_evidence_valid'] == 1
+    missed = False
+    if valid:
+        answer = clean_response(prediction['raw'], incomplete_prediction(prediction))
+        variants = [item['reference'], *item.get('accepted_references', [])]
+        def required(value):
+            return {field['field_name'] for field in value.get('fields', []) if field['requires_review']}
+        required_fields = set.intersection(*(required(value) for value in variants))
+        missed = ((all(value.get('requires_review') is True for value in variants)
+                   and answer.get('requires_review') is not True)
+                  or bool(required_fields - required(answer)))
+    dimensions = scores.get('semantic_dimensions') or scores.get('correctness_review') or {}
+    return {'task': item['record']['task'], 'score': scores['task_score'], 'valid': valid,
+            'incomplete': incomplete_prediction(prediction),
+            'unsupported_claims': dimensions.get('unsupported_claims') is True,
+            'missed_required_review': missed}
+
+
 class LightevalEvaluator:
     def __init__(self, runtime, schemas, minimum_examples):
         self.runtime, self.schemas, self.minimum_examples = runtime, schemas, minimum_examples
@@ -49,7 +73,7 @@ class LightevalEvaluator:
             from lighteval.models.model_output import ModelResponse
             from lighteval.tasks.requests import Doc
             metric = make_metric()
-        rows = []
+        rows, case_scores = [], {}
         print(f'Evaluating {output_dir.name}: {len(development)} student generations.', flush=True)
         output_dir.mkdir(parents=True, exist_ok=True)
         generation_path = output_dir / 'generation.json'
@@ -79,12 +103,16 @@ class LightevalEvaluator:
             raise ValueError('Evaluation predictions are incomplete')
         for index, (item, prediction) in enumerate(zip(development, predictions), 1):
             record, reference = item['record'], item['reference']
+            # Keep raw output intact while scoring every incomplete stop as invalid.
+            scoring_prediction = {**prediction, 'truncated': incomplete_prediction(prediction)}
             payload = target_payload(record, self.schemas)
             # Reference choices and hidden labels are passed only to the metric,
             # never to model.generate or the student's input tokenizer.
             print(f'Evaluation {index}/{len(development)}: {record["task"]} — scoring', flush=True)
             if judge is not None:
-                scores = judge.grade(item, prediction)
+                scores = judge.grade(item, scoring_prediction)
+            elif scoring_prediction['truncated']:
+                scores = {'task_score': 0.0, 'schema_evidence_valid': 0.0, 'grading_basis': 'incomplete_generation'}
             elif item.get('review', {}).get('status') == 'approved':
                 scores, request = grade_reviewed(item, prediction, self.schemas, judgments)
                 if request:
@@ -96,6 +124,7 @@ class LightevalEvaluator:
                           specific={'record':record,'schemas':self.schemas,'truncated':prediction['truncated']})
                 response = ModelResponse(text=[prediction['raw']])
                 scores = metric.compute_sample(model_response=response, doc=doc)
+            case_scores[record['id']] = safety_case(item, prediction, scores)
             rows.append({'scenario_id':record['id'],'task':record['task'], **scores,
                          'raw':prediction['raw'],'truncated':prediction['truncated']})
         atomic_jsonl(output_dir / 'review_queue.jsonl', pending)
@@ -111,7 +140,7 @@ class LightevalEvaluator:
                        for field in ('schema_evidence_valid', 'review_flag_correct', 'reference_evidence_overlap')}
                 for task in self.schemas
             }
-            report['case_scores'] = {r['scenario_id']: {'task': r['task'], 'score': r['task_score']} for r in rows}
+        report['case_scores'] = case_scores
         report['human_adjudicated_count'] = len(adjudicated)
         if adjudicated:
             report['human_review_dimension_rates'] = {name: statistics.mean(int(j[name]) for j in adjudicated) for name in adjudicated[0]}
@@ -127,6 +156,14 @@ class LightevalEvaluator:
         if judge is not None:
             report.update(engine='source-rubric-model-judge', scoring=judge.version,
                           reference_status='synthetic references with automated source-grounded judgments')
+        runtime_settings = getattr(self.runtime, 'config', {})
+        report['evaluation_protocol'] = digest({
+            'engine': report['engine'], 'scoring': report['scoring'], 'student': self.runtime.identity(),
+            'schemas': self.schemas, 'inference': runtime_settings.get('inference'),
+            'max_sequence_length': runtime_settings.get('training', {}).get('max_sequence_length'),
+            'evidence_first': runtime_settings.get('training', {}).get('evidence_first', False),
+            'judge': getattr(getattr(judge, 'parent', None), 'settings', None),
+        })
         output_dir.mkdir(parents=True,exist_ok=True)
         atomic_jsonl(output_dir/'predictions.jsonl',rows)
         atomic_json(output_dir/'scores.json',report)
