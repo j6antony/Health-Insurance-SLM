@@ -3,7 +3,7 @@
 - Branch for this review: `codex/distillation-corrections`
 - Last external review reference supplied in the brief: `b61ea8b29cc88794e6ef8427b3d7d950f772faea`
 - Corrective implementation under review: `a64bd67f8d489c465d096ef0deed8867dfc51301`
-- Latest external outcome: pending. The supplied brief was the review context.
+- Latest external outcome: Round 1 returned clarifications F1–F5 against the initial corrective submission. Re-review is pending.
 
 | Confirmed issue | Resolution | Verification |
 | --- | --- | --- |
@@ -26,3 +26,24 @@ from their owners. The repeat-judge plan and analyzer run offline. Collection
 of new repetitions and a per-scenario concurrent paid workflow remain deferred.
 The existing cumulative budget and approval guards passed their mock tests.
 No paid calls, new training, or historical artifact changes were made.
+
+
+## External review round 1
+
+Corrective implementation: `76c1db54a63788e19de8a2339a7b0a355163dd68`, based
+on review tip `38281b2ab6dea15defef598bd3ef9fbdce4dc06e`.
+
+| Finding | Resolution | Targeted verification |
+| --- | --- | --- |
+| F1: Candidate restore and cache provenance | Restore immediately before evaluation, bind caches to verified configuration and weight contents, and track the runtime's successful restore. Refuse legacy live caches without that binding. | Interrupted SFT receipt inference, unchanged hash reuse, changed weights, and unbound cache |
+| F2: Promotion without complete evidence | Require matching benchmark, scoring protocol and per-case safety evidence in development and reviewed release selection. Recheck previously accepted reviewed release receipts on resume. | Aggregate-only, empty identities, and mismatched case IDs are denied |
+| F3: Paired uncertainty ignored source families | Keep the fixed cases, resample whole source families within tasks, weight task means equally, and report both intervals and seed. | Unequal family sizes and task sizes give the expected point estimate and interval |
+| F4: Stale Colab extraction | Verify ZIP and extracted files before either diagnostic subprocess. Stage and replace stale code safely. | Older extraction is replaced and a bad ZIP is rejected even with an existing project |
+| F5: Implicit backup redirect or destination | Resolve one configured destination, record a blocked experimental GitHub upload, and distinguish local archive verification from Drive-mount verification. | No redirect or uploader call, local archive label, and unmounted Drive rejection |
+
+Seven focused tests passed before the full CPU run. The full suite ran 206
+tests, with 202 passing and four skipped. Verified notebook syntax, bundle
+checksum and integrity, and isolated CPU imports. No live GPU trainer,
+mounted Drive, or paid API was exercised. Existing frozen artifacts were
+preserved. The SFT-only semantic result and external re-review both remain
+pending. The previous deferred concurrency and held-out loss work is unchanged.
