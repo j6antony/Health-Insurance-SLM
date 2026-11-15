@@ -6,7 +6,7 @@ import statistics
 from collections import Counter
 from pathlib import Path
 
-from self_instruct_pipeline.config import ROOT, load_config
+from self_instruct_pipeline.config import ROOT
 from self_instruct_pipeline.persistence import Store, atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.prompt_builder import target_payload
 
@@ -172,6 +172,8 @@ def checkpoint_config(checkpoints, config):
 
 
 def run(run_dir, output, *, smoke=False, reuse_original=False, judge_budget=None, greedy_only=False):
+    if judge_budget is not None:
+        raise ValueError('Use distillation_loop.semantic_eval to preflight and authorize paid judging of saved predictions')
     cases = frozen_cases(run_dir)
     benchmark_hash = digest(cases)
     if smoke:
@@ -248,10 +250,7 @@ def run(run_dir, output, *, smoke=False, reuse_original=False, judge_budget=None
         if runtime is not None:
             del runtime
 
-        reports = score_jobs(store, jobs, cases, schemas, replay)
-        if judge_budget is not None:
-            reports = score_with_judge(store, jobs, cases, schemas, replay, judge_budget)
-        return reports
+        return score_jobs(store, jobs, cases, schemas, replay)
 
 
 def score_jobs(store, jobs, cases, schemas, replay, judge=None):
@@ -273,21 +272,6 @@ def score_jobs(store, jobs, cases, schemas, replay, judge=None):
     return result
 
 
-def score_with_judge(store, jobs, cases, schemas, replay, judge_budget):
-    from self_instruct_pipeline.budget import APIBudget
-    from self_instruct_pipeline.parent_backend import create_parent
-    from self_instruct_pipeline.usage import UsageLogger
-    from .semantic import SemanticJudge
-
-    config = load_config()['parent']
-    directory = store.path('benchmark_judging')
-    judge = SemanticJudge(create_parent(config, logger=UsageLogger(directory)), directory, schemas)
-    budget = APIBudget(store.path('judge_budget'), max_calls=2 * len({stage for _, stage in jobs}) * len(cases) * 4,
-                       max_cost_usd=judge_budget)
-    with budget.activate(allow_increase=True):
-        return score_jobs(store, jobs, cases, schemas, replay, judge)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', type=Path, required=True, help='Original Colab run directory')
@@ -296,7 +280,7 @@ def main():
     parser.add_argument('--reuse-original', action='store_true',
                         help='Reuse original Pass A predictions for initial and SFT+ORPO')
     parser.add_argument('--greedy-only', action='store_true', help='Run Pass A and save its comparison first')
-    parser.add_argument('--judge-budget-usd', help='Enable the original semantic judge with a cumulative cap')
+    parser.add_argument('--judge-budget-usd', help='Legacy flag. Paid judging has moved to distillation_loop.semantic_eval')
     args = parser.parse_args()
     if args.output.resolve() == args.run_dir.resolve():
         parser.error('Use a separate output directory')

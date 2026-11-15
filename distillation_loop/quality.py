@@ -9,6 +9,22 @@ def regression_gate(baseline, candidate, settings):
     failures = {task: baseline['per_task'][task] - candidate['per_task'][task]
                 for task in baseline['per_task']
                 if baseline['per_task'][task] - candidate['per_task'][task] > tolerances.get(task, default) + 1e-12}
+    if 'paired_regression_alpha' in settings:
+        before, after = baseline['case_scores'], candidate['case_scores']
+        if before.keys() != after.keys() or any(before[k]['task'] != after[k]['task'] for k in before):
+            raise ValueError('Paired regression requires the same cases and tasks')
+        alpha = settings['paired_regression_alpha'] / len(baseline['per_task'])
+        paired = {}
+        for task, drop in failures.items():
+            changes = [after[k]['score'] - row['score'] for k, row in before.items() if row['task'] == task]
+            losses = sum(x < -1e-12 for x in changes)
+            gains = sum(x > 1e-12 for x in changes)
+            discordant = losses + gains
+            p_value = sum(math.comb(discordant, i) for i in range(losses, discordant + 1)) / 2**discordant
+            paired[task] = {'drop': drop, 'losses': losses, 'gains': gains, 'p_value': p_value}
+        confirmed = {task: row['drop'] for task, row in paired.items() if row['p_value'] <= alpha}
+        return {'accepted': not confirmed, 'regressions_exceeding_tolerance': failures,
+                'confirmed_regressions': confirmed, 'paired': paired, 'per_task_alpha': alpha}
     return {'accepted': not failures, 'regressions_exceeding_tolerance': failures}
 
 
@@ -43,7 +59,8 @@ def training_coverage(pairs, target, new_count, minimum_new):
 def validate_quality_settings(config, tasks=None):
     settings = config.get('quality', {})
     allowed = {'max_task_regression', 'per_task_max_regression', 'minimum_macro_improvement',
-               'minimum_new_pair_fraction', 'minimum_deterministic_check_rate', 'deterministic_template_fraction'}
+               'minimum_new_pair_fraction', 'minimum_deterministic_check_rate', 'deterministic_template_fraction',
+               'paired_regression_alpha'}
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise ValueError('Unknown quality setting')
     for name in ('max_task_regression', 'minimum_macro_improvement', 'minimum_new_pair_fraction', 'minimum_deterministic_check_rate', 'deterministic_template_fraction'):
@@ -53,6 +70,10 @@ def validate_quality_settings(config, tasks=None):
             raise ValueError(f'quality.{name} must be finite in [0, 1]')
     if settings.get('minimum_new_pair_fraction', .5) == 0:
         raise ValueError('A round must require new data')
+    if 'paired_regression_alpha' in settings:
+        alpha = settings['paired_regression_alpha']
+        if type(alpha) not in (int, float) or not 0 < alpha < 1:
+            raise ValueError('paired_regression_alpha must be in (0, 1)')
     overrides = settings.get('per_task_max_regression', {})
     if not isinstance(overrides, dict) or (tasks is not None and set(overrides) - set(tasks)):
         raise ValueError('Unknown regression task')

@@ -53,6 +53,7 @@ class Pipeline:
         # Held-out records are used only for local duplicate checks. They must
         # never join demonstrations, prompts, or model-based novelty comparisons.
         self.exclusions = list(exclusions)
+        self.exclusion_guard = None
         self.model_checked = False
         self.accepted = self.store.unique_records('accepted_scenarios.jsonl', 'id')
         if len({r['fingerprint'] for r in self.accepted}) != len(self.accepted):
@@ -160,6 +161,21 @@ class Pipeline:
             messages[0]['content'] += ('\nUse recurring training_candidate_errors to generate new, diverse scenarios '
                                        'that exercise those skills within the supplied task quotas.')
             messages[-1]['content'] = json.dumps(payload, ensure_ascii=False)
+        if generation.get('scenario_blueprints'):
+            payload = json.loads(messages[-1]['content'])
+            settings = ('outpatient clinic', 'inpatient discharge', 'pharmacy', 'diagnostic lab', 'equipment supplier')
+            source_layouts = ('single dated record', 'original and dated addendum', 'table and narrative',
+                              'two records from different offices')
+            evidence_patterns = ('explicit supporting fact', 'missing prerequisite', 'conflicting dates',
+                                 'conditional rule with exception', 'irrelevant but plausible distractor')
+            payload['request']['scenario_blueprints'] = {
+                task: [{'setting': self.rng.choice(settings), 'source_layout': self.rng.choice(source_layouts),
+                        'evidence_pattern': self.rng.choice(evidence_patterns)} for _ in range(quota)]
+                for task, quota in quotas.items()
+            }
+            messages[0]['content'] += ('\nUse one structural blueprint per scenario. Adapt details to the task. '
+                                       'Vary the reasoning and source structure beyond the demonstrations.')
+            messages[-1]['content'] = json.dumps(payload, ensure_ascii=False)
         return {'task_quotas': quotas, 'difficulty': difficulty, 'seed_ids': [s['id'] for s in seeds],
                 'schemas': list(quotas), 'messages': messages}
 
@@ -264,7 +280,7 @@ class Pipeline:
                             self.reject('scenario_audit', str(exc), {'scenario': row, 'audit': audit}, batch_id)
                             continue
                         reason = self.dedup.check(row)
-                        if self.exclusion_dedup.check(row):
+                        if (self.exclusion_guard and self.exclusion_guard(row)) or self.exclusion_dedup.check(row):
                             reason = 'held_out_overlap'
                         if audit['duplicate_of']:
                             reason = 'semantic_duplicate:' + audit['duplicate_of']

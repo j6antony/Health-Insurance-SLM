@@ -47,6 +47,16 @@ class CorrectionTests(unittest.TestCase):
         self.assertEqual(result['reference'], target)
         self.assertEqual(teacher.calls, ['student_assessment'])
 
+    def test_defective_teacher_reference_is_quarantined(self):
+        record, target = template_pair(0)
+        prediction = {'raw': json.dumps(target), 'truncated': False}
+        teacher = Teacher({'verdict': 'reference_defective', 'error_categories': [],
+                           'findings': 'Reference is contradicted by the source.'})
+        with tempfile.TemporaryDirectory() as folder:
+            result = assess_candidate(teacher, record, target, prediction, folder, 'baseline')
+        self.assertEqual(result['status'], 'quarantined')
+        self.assertEqual(result['reason'], 'Reference is contradicted by the source.')
+
     def test_invalid_student_output_retains_reference_without_api_call(self):
         record, target = template_pair(0)
         for raw, truncated in (('{bad', False), ('{}', False), (json.dumps(target), True)):
@@ -220,3 +230,24 @@ class MixedCurriculumTests(unittest.TestCase):
         self.assertEqual(len({record['id'] for record, _ in pairs}), 100)
         self.assertNotIn('60', {record['id'] for record, _ in pairs})
         self.assertEqual(diagnostics['training_mix']['adaptive'], 40)
+
+    def test_stratified_screening_refuses_to_skip_a_task(self):
+        tasks = [f'task_{i}' for i in range(18)]
+        pipeline = SimpleNamespace(schemas=dict.fromkeys(tasks), training_candidate_feedback={})
+
+        def generate(target, weights):
+            return [({'id': str(i), 'task': tasks[i % 18] if i < 120 else tasks[i % 6]}, {})
+                    for i in range(target)]
+
+        def assess(pipeline, record, reference, prediction, directory, checkpoint):
+            return {'scenario': record, 'reference': reference, 'status': 'accepted',
+                    'assessment': {'verdict': 'correct'}}
+
+        data = SimpleNamespace(pipeline=pipeline, base_weights={}, verified_pairs=generate)
+        config = {'scenarios_per_round': 200, 'adaptive_pairs_per_round': 80,
+                  'balanced_curriculum': True, 'stratified_screening': True}
+        with tempfile.TemporaryDirectory() as folder, patch(
+                'distillation_loop.correction.assess_candidate', side_effect=assess):
+            with self.assertRaisesRegex(ValueError, 'Adaptive screening floor not met'):
+                adaptive_pairs(data, None, Path(folder), {'last_checkpoint': 'prior'}, config, {}, [],
+                               lambda runtime, records, schemas, directory: {r['id']: {} for r in records})

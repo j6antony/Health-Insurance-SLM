@@ -160,6 +160,18 @@ def load_loop_config(path='config/distillation_loop.json'):
         if (not value.get('student_conditioned_training') or type(count) is not int
                 or not 1 <= count <= value['scenarios_per_round']):
             raise ValueError('adaptive_pairs_per_round requires adaptive training and a valid per-round quota')
+    if 'split_path' in evaluation:
+        if (evaluation['mode'] != 'fixed' or not isinstance(evaluation['split_path'], str)
+                or not evaluation['split_path'] or 'holdout_families_per_task' in evaluation):
+            raise ValueError('Use the original split path in fixed mode without requesting a second holdout split')
+    for key in ('historical_training_plan', 'teacher_loss_candidates'):
+        if key in value and (not isinstance(value[key], str) or not value[key].strip()):
+            raise ValueError(f'{key} must be a nonempty path')
+    if type(value.get('require_semantic_decision', False)) is not bool:
+        raise ValueError('require_semantic_decision must be a boolean')
+    if value.get('require_semantic_decision') and (not evaluation.get('split_path')
+            or not evaluation.get('semantic_judge') or not value.get('historical_training_plan')):
+        raise ValueError('The revised loop requires the saved split, semantic scoring, and historical training plan')
     if 'holdout_families_per_task' in evaluation:
         holdout = evaluation['holdout_families_per_task']
         if evaluation['mode'] != 'fixed' or type(holdout) is not int or not 1 <= holdout < 10:
@@ -189,6 +201,9 @@ def load_loop_config(path='config/distillation_loop.json'):
         raise ValueError('Invalid LoRA dropout')
     if type(t['replay_previous_rounds']) is not bool:
         raise ValueError('replay_previous_rounds must be boolean')
+    replay = t.get('replay_fraction', 0)
+    if type(replay) not in (int, float) or not math.isfinite(replay) or not 0 <= replay <= 1:
+        raise ValueError('Training replay_fraction must be finite in [0, 1]')
     train_batch_size = value['training'].get('per_device_train_batch_size', 1)
     if type(train_batch_size) is not int or train_batch_size < 1:
         raise ValueError('Training per_device_train_batch_size must be a positive integer')

@@ -80,15 +80,108 @@ def template_pair(index):
     return record, response
 
 
-def template_pairs(count, schemas, exclusions):
+def structured_template_pair(index):
+    task = ('document_classification', 'field_extraction', 'claim_scrubbing')[index % 3]
+    case = index // 3
+    if task == 'document_classification':
+        heading, label = (
+            ('Itemized hospital bill', 'hospital_bill'),
+            ('Discharge summary', 'discharge_summary'),
+            ('Medication prescription', 'prescription'),
+            ('Laboratory investigation report', 'investigation_report'),
+            ('Insurance claim form', 'claim_form'),
+        )[case % 5]
+        source = f'{heading} | Synthetic record {case}'
+        instruction = 'Classify this document using the heading and the supplied taxonomy.'
+        answer = {'document_type': label, 'evidence': [heading], 'requires_review': False}
+        checked = {'document_type': label, 'requires_review': False}
+    elif task == 'field_extraction':
+        identifier = f'POL-{case:05d}'
+        source = f'Policy number: {identifier}. Synthetic intake record {case}.'
+        instruction = 'Extract the policy number only and cite its source.'
+        answer = {'fields': [{'field_name': 'policy_number', 'value': identifier,
+                             'evidence': identifier, 'page_number': 1, 'requires_review': False}]}
+        checked = {}
+    else:
+        signature, date = bool(case & 1), bool(case & 2)
+        complete = signature and date
+        source = (f'Synthetic intake checklist {case}. Signature present: {signature}. '
+                  f'Service date present: {date}. Review is required unless both are present.')
+        missing = [name for name, present in [('Signature', signature), ('Service date', date)] if not present]
+        instruction = 'Apply the supplied checklist and identify any missing items.'
+        answer = {'answer': 'Checklist complete.' if complete else 'Checklist incomplete.',
+                  'missing_information': missing, 'issues': missing,
+                  'requires_review': not complete, 'evidence': [{'document_id': 'RULE', 'quote': source}]}
+        checked = {'missing_information': missing, 'issues': missing}
+    rules = [{'path': [key], 'operation': 'equals', 'operands': [value]} for key, value in checked.items()]
+    if task == 'claim_scrubbing':
+        rules.append({'path': ['requires_review'], 'operation': 'any', 'operands': [not signature, not date]})
+    if task == 'field_extraction':
+        rules.extend({'path': ['fields', 0, key], 'operation': 'equals', 'operands': [value]}
+                     for key, value in answer['fields'][0].items() if key != 'evidence')
+    record = {'id': f'fictional-structured-v1-{index}', 'task': task, 'instruction': instruction,
+              'scenario': {'synthetic': True, 'documents': [{'document_id': 'RULE', 'page_number': 1, 'text': source}],
+                           'context': {}},
+              'case_type': 'conditional', 'difficulty': 'medium', 'verification_basis': 'fictional-structured-v1',
+              'template_family': task, 'reasoning_variant': str(case % 5), 'answer_checks': rules}
+    return record, answer
+
+
+def contextual_template_pair(index):
+    record, answer = template_pair(index)
+    task = record['task']
+    context = record['scenario']['context']
+    case = index // 3
+    if task == 'patient_billing':
+        ledger = context['ledger']
+        documents = [
+            ('PROVIDER-STATEMENT', f'Patient accounts | Encounter SYN-{case}\nTotal charges: USD {ledger["billed"]}.'),
+            ('REMITTANCE', f'Remittance for SYN-{case}\nPlan payment: USD {ledger["paid"]}. Contractual adjustment: USD {ledger["adjustment"]}.'),
+            ('LEDGER-GUIDE', 'For this ledger, subtract the plan payment and contractual adjustment from total charges. The result is an accounting balance only.'),
+        ]
+        record['instruction'] = 'Reconcile the provider statement and remittance. Report the accounting balance in USD.'
+    elif task == 'appeals_process_qa':
+        documents = [
+            ('NOTICE', f'Appeals correspondence | File SYN-{case}\nNotice date: {context["start_date"]}.'),
+            ('PLAN-ADDENDUM', f'For this notice, the submission window closes {context["offset_days"]} calendar days after the notice date. The notice date is day zero. Weekends and holidays count.'),
+        ]
+        record['instruction'] = 'Calculate the submission deadline from the notice and the supplied plan addendum. Use ISO date format.'
+        answer['answer'] = answer['answer'].replace('fictional exercise deadline', 'submission deadline')
+    else:
+        weeks = 8 if context['criterion_A'] else 4
+        authorization = 'attached and signed' if context['criterion_B'] else 'not supplied'
+        relationship = 'both requirements' if context['relationship'] == 'AND' else 'at least one requirement'
+        documents = [
+            ('PLAN-EXCERPT', f'For this sample plan’s documentation checklist, {relationship} must be satisfied. The requirements are six completed therapy weeks and a signed referral.'),
+            ('THERAPY-SUMMARY', f'Rehabilitation progress summary | File SYN-{case}\nCompleted therapy: {weeks} weeks.'),
+            ('REFERRAL-LOG', f'Intake referral log | File SYN-{case}\nReferral status: {authorization}.'),
+        ]
+        record['instruction'] = 'Apply the documentation checklist to the submitted records. State whether the checklist is satisfied and explain each requirement.'
+        met = context['criterion_A'] and context['criterion_B'] if context['relationship'] == 'AND' else context['criterion_A'] or context['criterion_B']
+        answer['answer'] = f'The documentation checklist is {"satisfied" if met else "not satisfied"}.'
+        answer['criteria_assessment'] = [f'Completed therapy: {weeks} weeks. Signed referral: {authorization}.']
+    record['id'] = f'contextual-rules-v1-{index}'
+    record['verification_basis'] = 'contextual-rules-v1'
+    record['scenario'] = {'synthetic': True, 'context': {}, 'documents': [
+        {'document_id': name, 'page_number': 1, 'text': text} for name, text in documents]}
+    answer['evidence'] = [{'document_id': name, 'quote': text.split('\n')[-1]} for name, text in documents]
+    for rule in record['answer_checks']:
+        rule['operands'] = [answer[rule['path'][0]]]
+    return record, answer
+
+
+def template_pairs(count, schemas, exclusions, *, expanded=False, exclusion_guard=None):
     # Bound scanning if held-out data happen to exclude a complete template family.
     dedup = Deduplicator(exclusions)
     pairs = []
     for index in range(max(100, count * 20)):
         if len(pairs) == count:
             break
-        record, answer = template_pair(index)
-        if dedup.check(record):
+        if expanded:
+            record, answer = (contextual_template_pair if index % 2 == 0 else structured_template_pair)(index // 2)
+        else:
+            record, answer = template_pair(index)
+        if (exclusion_guard and exclusion_guard(record)) or dedup.check(record):
             continue
         validate_answer(record, answer, schemas[record['task']])
         pairs.append((record, answer))

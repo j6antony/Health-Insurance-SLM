@@ -4,7 +4,7 @@ import json
 import os
 import re
 from collections import Counter
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from itertools import combinations
 from pathlib import Path
 from statistics import mean
@@ -108,6 +108,7 @@ class JudgmentPlan:
                 if any(value != matches[0] for value in matches[1:]):
                     raise ValueError(f'Conflicting legacy semantic judgments for {item["record"]["id"]}')
                 self.cached[key] = matches[0]
+                atomic_json(path, matches[0])
         if key in self.cached:
             self.pending.pop(key, None)
             return key
@@ -151,6 +152,7 @@ def score(cases, generations, plan, store, quality, thresholds, identity):
         for item, prediction in zip(cases, predictions, strict=True):
             record = item['record']
             rows.append({'scenario_id': record['id'], 'task': record['task'],
+                         'prediction_sha256': digest(prediction),
                          **judge.grade(item, prediction)})
         rows_by_stage[stage] = rows
         atomic_jsonl(store.path(f'{stage}_semantic_cases.jsonl'), rows)
@@ -267,11 +269,21 @@ def run(comparison_dir, split, output, *, corpus=CORPUS, schemas_path=SCHEMAS,
         preflight['approval_hash'] = digest(preflight)
         atomic_json(store.path('cost_preflight.json'), preflight)
         if plan.pending and approval is None:
+            if not store.path('semantic_comparison.json').exists():
+                atomic_json(store.path('diagnostic_status.json'), {
+                    'decision': 'pending_sft_only_semantic_result',
+                    'reason': 'Missing saved semantic judgments require approval',
+                    'approval_hash': preflight['approval_hash'],
+                    'required_output': 'semantic_comparison.json',
+                })
             return preflight
         if plan.pending:
             if approval != preflight['approval_hash']:
                 raise ValueError('Approval does not match the current cost preflight')
-            cap = Decimal(str(max_usd))
+            try:
+                cap = Decimal(str(max_usd))
+            except InvalidOperation as exc:
+                raise ValueError('Authorized cumulative cap must be a USD amount') from exc
             if not cap.is_finite() or cap < accounted + reservation:
                 raise ValueError('Authorized cumulative cap must cover the complete worst-case preflight')
             calls = ledger.get('calls', 0) + preflight['max_remaining_requests']
@@ -282,6 +294,7 @@ def run(comparison_dir, split, output, *, corpus=CORPUS, schemas_path=SCHEMAS,
                 score(cases, generations, plan, store, config['quality'], config['thresholds'], identity)
         else:
             score(cases, generations, plan, store, config['quality'], config['thresholds'], identity)
+        store.path('diagnostic_status.json').unlink(missing_ok=True)
         return preflight
 
 

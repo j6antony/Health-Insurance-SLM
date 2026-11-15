@@ -32,7 +32,7 @@ def build(output=None, update_notebook=True):
         manifest = {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in sorted(files)}
         for name in ('distillation_colab_100.ipynb', 'distillation_colab_1000.ipynb',
-                     'distillation_kaggle_100.ipynb'):
+                     'distillation_kaggle_100.ipynb', 'semantic_diagnostic_colab.ipynb'):
             notebook = ROOT / name
             nb = json.loads(notebook.read_text())
             for cell in nb['cells']:

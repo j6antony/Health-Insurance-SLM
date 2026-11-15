@@ -9,6 +9,7 @@ from self_instruct_pipeline.deduplicator import fingerprint
 from self_instruct_pipeline.persistence import atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.pipeline import Pipeline
 from self_instruct_pipeline.validation import validate_answer, validate_audit
+from .leakage import exclusion_record
 
 
 def checked_pairs(pipeline):
@@ -104,17 +105,22 @@ class CurriculumData:
     def __init__(self, base_config, development, output_dir, parent=None):
         config=copy.deepcopy(base_config)
         config['paths']['output_dir']=str(output_dir/'self_instruct')
-        self.pipeline=Pipeline(config,parent=parent,exclusions=[x['record'] for x in development])
+        self.pipeline=Pipeline(config,parent=parent,exclusions=[exclusion_record(x) for x in development])
         self.base_weights=copy.deepcopy(self.pipeline.scheduler.weights)
         self.owns_lock=False
         self.deterministic_fraction = 0.0
         self.export_reference_pairs = True
+        self.expanded_templates = False
+        self.exclusion_registry = None
 
     def open(self):
         self.lock=self.pipeline.store.lock()
         self.lock.__enter__();self.owns_lock=True
         self.pipeline=Pipeline(self.pipeline.config,parent=self.pipeline.parent,exclusions=self.pipeline.exclusions)
         self.pipeline.initialize_manifest()
+        if self.exclusion_registry is not None:
+            self.exclusion_registry.require_clean(self.pipeline.accepted, 'saved candidate pool')
+            self.pipeline.exclusion_guard = self.exclusion_registry.match
 
     def close(self):
         if self.owns_lock:
@@ -130,13 +136,56 @@ class CurriculumData:
     def verified_pairs(self, target, weights):
         from .trusted_templates import template_pairs
         count = math.ceil(target * self.deterministic_fraction)
-        templates = template_pairs(count, self.pipeline.schemas, self.pipeline.exclusions) if count else []
+        templates = template_pairs(count, self.pipeline.schemas, self.pipeline.exclusions,
+                                   expanded=self.expanded_templates,
+                                   exclusion_guard=self.pipeline.exclusion_guard) if count else []
         self.pipeline.scheduler.weights = weights
         silver_target = target - len(templates)
         if silver_target:
             self.pipeline.build_pairs(silver_target, export_pairs=self.export_reference_pairs)
         # Template IDs are stable; cumulative replay does not create extra unique data.
         return (templates + checked_pairs(self.pipeline)[:silver_target])[:target]
+
+    def screening_topup(self, deficits, eligible):
+        """Reuse verified candidates and request only tasks with a remaining gap."""
+        from self_instruct_pipeline.pipeline import GenerationExhausted
+
+        pipeline = self.pipeline
+        verified = checked_pairs(pipeline)
+        verified_ids = {record['id'] for record, _ in verified}
+        unanswered = {record['id'] for record in pipeline.accepted
+                      if record['task'] in deficits and record['id'] not in verified_ids}
+        if unanswered:
+            pipeline.answer(allow_partial=True, scenario_ids=unanswered)
+            verified = checked_pairs(pipeline)
+        cached = eligible(verified)
+        available = Counter(record['task'] for record, _ in cached)
+        needed = {task: count - available[task] for task, count in deficits.items()
+                  if count > available[task]}
+        if needed:
+            counts = Counter(record['task'] for record in pipeline.accepted)
+            # Include spare candidates for answer audit and context-length failures.
+            targets = {task: counts[task] + 2 * count for task, count in needed.items()}
+            previous_target = pipeline.config['generation']['target_accepted_scenarios']
+            existing = {record['id'] for record in pipeline.accepted}
+            pipeline.config['generation']['target_accepted_scenarios'] = (
+                len(existing) + sum(targets[task] - counts[task] for task in targets))
+            try:
+                try:
+                    pipeline.generate(task_targets=targets)
+                except GenerationExhausted:
+                    pass
+                cached_ids = {record['id'] for record, _ in cached}
+                candidate_ids = {record['id'] for record in pipeline.accepted
+                                 if record['task'] in needed and record['id'] not in cached_ids
+                                 and record['id'] not in existing}
+                if candidate_ids:
+                    pipeline.answer(allow_partial=True, scenario_ids=candidate_ids)
+            finally:
+                pipeline.config['generation']['target_accepted_scenarios'] = previous_target
+                pipeline.checkpoint()
+            cached = eligible(checked_pairs(pipeline))
+        return [pair for pair in cached if pair[0]['task'] in deficits]
 
     def answer_pairs(self):
         self.pipeline.answer(allow_partial=True);self.pipeline.export();self.pipeline.checkpoint()

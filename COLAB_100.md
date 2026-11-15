@@ -108,3 +108,11 @@ Keep the same run folder. In the training cell, increase `API_MAX_CALLS` or
 `API_MAX_COST_USD` as indicated by the error, then rerun that cell. These caps
 are cumulative. Requests and costs already recorded still count against the new
 limits. The notebook resumes from the state and checkpoints already on disk.
+
+## Five-round balanced profile
+
+The revised profile in `distillation_colab_1000.ipynb` is paused while the saved
+SFT-only semantic result is pending. Start with the CPU workflow in
+[SEMANTIC_DIAGNOSTIC.md](SEMANTIC_DIAGNOSTIC.md). The historical comparison
+includes the SFT+ORPO adapter. The revised training profile defaults to SFT
+and requires the original 360-case development and 108-case release split.

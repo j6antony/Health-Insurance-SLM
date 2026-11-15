@@ -326,3 +326,23 @@ class FinalAdversarialTests(unittest.TestCase):
         self.assertIn('2024-02-29', template_pair(19)[1]['answer'])
         self.assertIn('not met', template_pair(5)[1]['answer'])  # true AND false
         self.assertIn('criteria are met', template_pair(17)[1]['answer'])  # true OR false
+
+
+class PairedRegressionTests(unittest.TestCase):
+    def test_small_churn_passes_but_systematic_losses_fail(self):
+        from distillation_loop.quality import regression_gate
+
+        tasks = [f'task_{n}' for n in range(18)]
+
+        def report(losses):
+            return {
+                'per_task': {task: 1 - (losses / 20 if task == tasks[0] else 0) for task in tasks},
+                'case_scores': {f'{task}/{index}': {'task': task, 'score': int(task != tasks[0] or index >= losses)}
+                                for task in tasks for index in range(20)},
+            }
+
+        settings = {'max_task_regression': .05, 'paired_regression_alpha': .05}
+        small = regression_gate(report(0), report(2), settings)
+        self.assertTrue(small['accepted'])
+        self.assertEqual(small['paired'][tasks[0]]['losses'], 2)
+        self.assertFalse(regression_gate(report(0), report(12), settings)['accepted'])

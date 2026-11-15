@@ -42,9 +42,10 @@ class LightevalEvaluator:
         self.runtime, self.schemas, self.minimum_examples = runtime, schemas, minimum_examples
 
     def evaluate(self, development, output_dir):
+        judge = getattr(self, 'semantic_judge', None)
         reviewed = all(x.get('review', {}).get('status') == 'approved' for x in development)
         metric = None
-        if not reviewed:
+        if not reviewed and judge is None:
             from lighteval.models.model_output import ModelResponse
             from lighteval.tasks.requests import Doc
             metric = make_metric()
@@ -82,7 +83,9 @@ class LightevalEvaluator:
             # Reference choices and hidden labels are passed only to the metric,
             # never to model.generate or the student's input tokenizer.
             print(f'Evaluation {index}/{len(development)}: {record["task"]} — scoring', flush=True)
-            if item.get('review', {}).get('status') == 'approved':
+            if judge is not None:
+                scores = judge.grade(item, prediction)
+            elif item.get('review', {}).get('status') == 'approved':
                 scores, request = grade_reviewed(item, prediction, self.schemas, judgments)
                 if request:
                     pending.append(request)
@@ -102,6 +105,13 @@ class LightevalEvaluator:
         report = aggregate_scores(rows,self.schemas,self.minimum_examples)
         report['grading_basis_counts'] = dict(Counter(row.get('grading_basis', 'automatic_reference_metric') for row in rows))
         adjudicated = [row['correctness_review'] for row in rows if 'correctness_review' in row]
+        if judge is not None:
+            report['per_task_diagnostics'] = {
+                task: {field: statistics.mean(r[field] for r in rows if r['task'] == task)
+                       for field in ('schema_evidence_valid', 'review_flag_correct', 'reference_evidence_overlap')}
+                for task in self.schemas
+            }
+            report['case_scores'] = {r['scenario_id']: {'task': r['task'], 'score': r['task_score']} for r in rows}
         report['human_adjudicated_count'] = len(adjudicated)
         if adjudicated:
             report['human_review_dimension_rates'] = {name: statistics.mean(int(j[name]) for j in adjudicated) for name in adjudicated[0]}
@@ -114,6 +124,9 @@ class LightevalEvaluator:
                       reference_status=('independently reviewed references' if all(x.get('review', {}).get('status') == 'approved' for x in development) else 'fixed locally authored synthetic references; no independent expert review' if fixed else 'automatically checked synthetic references; no human review or independent gold'),
                       scoring=SCORING_VERSION, adjudications_hash=digest(judgments),
                       benchmark_hash=digest(development), generation_key=generation_key)
+        if judge is not None:
+            report.update(engine='source-rubric-model-judge', scoring=judge.version,
+                          reference_status='synthetic references with automated source-grounded judgments')
         output_dir.mkdir(parents=True,exist_ok=True)
         atomic_jsonl(output_dir/'predictions.jsonl',rows)
         atomic_json(output_dir/'scores.json',report)

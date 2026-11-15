@@ -44,6 +44,23 @@ def infer_payloads(runtime, payloads):
     return [runtime.infer(p) for p in payloads]
 
 
+EVIDENCE_FIRST_KEYS = ('evidence', 'missing_information', 'issues', 'criteria_assessment',
+                       'requires_review', 'suggested_codes', 'document_type', 'fields', 'draft', 'answer')
+
+
+def ordered_answer(answer):
+    return {key: answer[key] for key in dict.fromkeys((*EVIDENCE_FIRST_KEYS, *answer)) if key in answer}
+
+
+def evidence_first_payload(payload):
+    schema = payload['response_schema']
+    properties = ordered_answer(schema['properties'])
+    return {**payload, 'instruction': payload['instruction'] +
+            '\nReturn JSON with the top-level fields in this order: ' + ', '.join(properties) + '.',
+            'response_schema': {**schema, 'properties': properties,
+                                'required': [key for key in properties if key in schema['required']]}}
+
+
 def render_prompt(tokenizer, payload):
     return tokenizer.apply_chat_template(
         [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
@@ -126,7 +143,7 @@ class StudentRuntime:
     def infer(self, payload):
         return self.infer_many([payload])[0]
 
-    def infer_many(self, payloads, batch_size=None):
+    def infer_many(self, payloads, batch_size=None, *, completed=None, on_batch=None):
         """Length-bucketed left-padded decoding, with per-example EOS accounting."""
         import torch
         self.prepare()
@@ -134,16 +151,23 @@ class StudentRuntime:
             batch_size = self.config['inference'].get('batch_size', 2)
         if type(batch_size) is not int or batch_size < 1:
             raise ValueError('batch_size must be a positive integer')
-        results = [None] * len(payloads)
+        results = list(completed) if completed is not None else [None] * len(payloads)
+        if len(results) != len(payloads):
+            raise ValueError('Saved generation does not match the input length')
+        if self.config['training'].get('evidence_first'):
+            payloads = [evidence_first_payload(payload) for payload in payloads]
         texts = [render_prompt(self.tokenizer, p) for p in payloads]
         lengths = [len(self.tokenizer(t, add_special_tokens=False)['input_ids']) for t in texts]
         valid = []
         for index, length in enumerate(lengths):
+            if results[index] is not None:
+                continue
             if length + self.config['inference']['max_new_tokens'] > self.config['training']['max_sequence_length']:
                 results[index] = {'raw': '', 'truncated': True, 'error': 'Prompt exceeds inference context budget'}
             else:
                 valid.append(index)
         valid.sort(key=lambda i: lengths[i])
+        already_done = len(payloads) - len(valid)
         start = 0
         while start < len(valid):
             indices = valid[start:start + batch_size]
@@ -156,7 +180,10 @@ class StudentRuntime:
                 for index, prediction in zip(indices, predictions):
                     results[index] = prediction
                 start += len(indices)
-                print(f'GPU {os.environ.get("LOCAL_RANK", "0")} inference: {start}/{len(valid)}', flush=True)
+                if on_batch is not None:
+                    on_batch(results, batch_size)
+                print(f'GPU {os.environ.get("LOCAL_RANK", "0")} inference: '
+                      f'{already_done + start}/{len(payloads)}', flush=True)
                 continue
 
             # Free the failed batch after its exception traceback has been released.
@@ -176,12 +203,25 @@ class StudentRuntime:
             encoded = self.tokenizer(texts, padding=True, add_special_tokens=False, return_tensors='pt')
             width = encoded['input_ids'].shape[-1]
             inputs = encoded.to(self.model.get_input_embeddings().weight.device)
+            budget = self.config['inference']['max_new_tokens']
+            stopping = getattr(self, 'repetition_stopping', None)
+            generation_options = {}
+            if stopping is not None:
+                from transformers import StoppingCriteriaList
+
+                criterion = stopping(width, budget, self.tokenizer)
+                generation_options['stopping_criteria'] = StoppingCriteriaList([criterion])
             with torch.inference_mode():
-                output = self.model.generate(**inputs, max_new_tokens=self.config['inference']['max_new_tokens'],
-                    do_sample=False, pad_token_id=self.tokenizer.pad_token_id, eos_token_id=self.tokenizer.eos_token_id)
+                output = self.model.generate(**inputs, max_new_tokens=budget, do_sample=False,
+                    pad_token_id=self.tokenizer.pad_token_id, eos_token_id=self.tokenizer.eos_token_id,
+                    **generation_options)
+            stopped_at = criterion.stopped_at() if stopping is not None else [0] * len(texts)
             rows = []
-            for generated in output[:, width:].tolist():
-                rows.append(decode_prediction(self.tokenizer, generated, self.config['inference']['max_new_tokens']))
+            for generated, stop_length in zip(output[:, width:].tolist(), stopped_at):
+                row = decode_prediction(self.tokenizer, generated[:stop_length] if stop_length else generated, budget)
+                if stop_length:
+                    row.update(truncated=True, stop_reason='repetition')
+                rows.append(row)
             return rows
         finally:
             self.model.config.use_cache = previous_cache
@@ -190,11 +230,58 @@ class StudentRuntime:
     def _set_training_mode(self):
         self.model.train()
 
+    def training_pair_fits(self, record, answer, schemas):
+        cfg = self.config['training']
+        payload = target_payload(record, schemas)
+        if cfg.get('evidence_first'):
+            payload, answer = evidence_first_payload(payload), ordered_answer(answer)
+        prefix = self.tokenizer(render_prompt(self.tokenizer, payload), add_special_tokens=False)['input_ids']
+        completion = self.tokenizer(json.dumps(answer, ensure_ascii=False), add_special_tokens=False)['input_ids']
+        return (len(prefix) + len(completion) + 1 <= cfg['max_sequence_length']
+                and len(prefix) + self.config['inference']['max_new_tokens'] <= cfg['max_sequence_length'])
+
+    def tokenize_pair(self, record, answer, schemas):
+        cfg = self.config['training']
+        payload = target_payload(record, schemas)
+        if cfg.get('evidence_first'):
+            payload, answer = evidence_first_payload(payload), ordered_answer(answer)
+        return tokenize_teacher_pair(self.tokenizer, payload, answer, cfg['max_sequence_length'])
+
+    def completion_loss(self, pairs, schemas):
+        import torch
+        from collections import Counter
+
+        self.prepare()
+        self.model.eval()
+        device = self.model.get_input_embeddings().weight.device
+        total, tokens, tasks, excluded = 0.0, 0, Counter(), Counter()
+        with torch.inference_mode():
+            for record, answer in pairs:
+                try:
+                    sample = self.tokenize_pair(record, answer, schemas)
+                except ValueError as exc:
+                    if str(exc) != 'Training sequence exceeds budget; no silent truncation is allowed':
+                        raise
+                    excluded['sequence_budget'] += 1
+                    continue
+                ids = torch.tensor([sample['input_ids']], device=device)
+                mask = torch.tensor([sample['completion_mask']], device=device, dtype=torch.bool)
+                labels = ids.masked_fill(~mask, -100)
+                labels[:, 0] = -100
+                count = sum(sample['completion_mask'][1:])
+                loss = float(self.model(input_ids=ids, labels=labels, use_cache=False).loss)
+                if not math.isfinite(loss):
+                    raise ValueError(f'Nonfinite held-out completion loss for {record["id"]}')
+                total += loss * count
+                tokens += count
+                tasks[record['task']] += 1
+        return {'completion_loss': total / tokens if tokens else None, 'completion_tokens': tokens,
+                'valid_examples': sum(tasks.values()), 'per_task_examples': dict(tasks),
+                'excluded': dict(excluded)}
+
     def train(self, pairs, schemas, output_dir):
         self.prepare()
-        cfg = self.config['training']
-        examples = [tokenize_teacher_pair(self.tokenizer, target_payload(r, schemas), answer,
-                                         cfg['max_sequence_length']) for r, answer in pairs]
+        examples = [self.tokenize_pair(record, answer, schemas) for record, answer in pairs]
         if not examples:
             raise ValueError('No accepted teacher targets for training')
         return train_tokenized(self, examples, output_dir)
@@ -226,12 +313,12 @@ def train_tokenized(runtime, examples, output_dir):
             num_train_epochs=cfg['epochs_per_round'],
             max_steps=min(cfg['max_steps_per_round'],
                           math.ceil(len(examples) / effective_batch_size) * cfg['epochs_per_round']),
-            learning_rate=cfg['learning_rate'], max_length=cfg['max_sequence_length'],
+            learning_rate=cfg['learning_rate'], lr_scheduler_type=cfg.get('lr_scheduler_type', 'linear'), max_length=cfg['max_sequence_length'],
             completion_only_loss=True, packing=False,
             dataset_kwargs={'skip_prepare_dataset': True},
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
             ddp_find_unused_parameters=False, ddp_timeout=300,
-            fp16=True, bf16=False, optim='adamw_torch', report_to='none',
+            fp16=True, bf16=False, optim='adamw_torch', weight_decay=cfg.get('weight_decay', 0.0), report_to='none',
             save_strategy='no', eval_strategy='no', logging_steps=1,
             seed=runtime.config['random_seed'], remove_unused_columns=False)
         if args.n_gpu != 1 or args.world_size != world_size:

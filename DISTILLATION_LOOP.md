@@ -62,7 +62,7 @@ Scores are task-specific and lie in [0, 1]:
 - Classification: exact document-label accuracy, gated by schema and source evidence.
 - Extraction: F1 over field name, normalized value, and review flag; source quote/page checks must pass.
 - Clinical coding: suggested-code-set F1, gated by source membership, schema/evidence, and the review flag.
-- Free-text tasks: ROUGE-L over the answer and any draft/criteria text, gated by schema/evidence, review-flag agreement, and missing-information/no-issue distinctions.
+- Free-text tasks: The legacy automatic scorer uses normalized reference agreement. The five-round Colab profile uses source-based semantic grading for open-ended answers, with schema and evidence validation and a review-flag correctness gate.
 
 The stop gate requires the mean of per-task scores, the minimum per-task score, and the overall schema/evidence-valid rate to pass together. Every task must have the configured number of examples. Missing tasks, inconsistent summaries, nonfinite scores, or truncated outputs cannot pass. All-valid JSON alone is insufficient.
 

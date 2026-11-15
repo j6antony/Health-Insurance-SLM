@@ -9,6 +9,9 @@ from self_instruct_pipeline.validation import validate_answer, validate_schema, 
 def load_benchmarks(config, schemas):
     settings = config.get('evaluation', {})
     if settings.get('mode') == 'fixed':
+        if 'split_path' in settings:
+            return load_saved_split(resolve_path(settings['split_path']),
+                                    resolve_path(settings['validation_path']), schemas)
         if settings.get('holdout_families_per_task'):
             return fixed_family_split(config, schemas)
         return load_fixed_validation(config, schemas), []
@@ -190,8 +193,10 @@ def fixed_family_split(config, schemas):
 def load_saved_split(split_path, corpus_path, schemas):
     """Rehydrate the original ordered split exclusively by the saved case IDs."""
     import json
-    from collections import Counter
+    from .leakage import scenario_content
 
+    if not split_path.is_file() or not corpus_path.is_file():
+        raise ValueError(f'Expected the original split and benchmark corpus at {split_path} and {corpus_path}')
     split = json.loads(split_path.read_text())
     corpus = read_jsonl(corpus_path)
     index = {item['record']['id']: item for item in corpus}
@@ -210,7 +215,7 @@ def load_saved_split(split_path, corpus_path, schemas):
         if len(schemas) != 18 or Counter(x['record']['task'] for x in rows) != dict.fromkeys(schemas, quota):
             raise ValueError(f'{name} benchmark task coverage mismatch')
         groups = {x['source_group'] for x in rows}
-        content = {digest(x['record']['scenario']) for x in rows}
+        content = {scenario_content(x['record']) for x in rows}
         if sorted(groups) != spec['source_groups'] or seen_groups & groups or seen_content & content:
             raise ValueError(f'{name} source group or content mismatch')
         for item in rows:
