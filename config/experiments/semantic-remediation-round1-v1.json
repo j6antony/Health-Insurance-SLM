@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "status": "review_only_blocked_by_original_semantic_gate",
+  "base_profile": "distillation_1000_configs",
+  "model": "Qwen/Qwen3-8B",
+  "quantization_bits": 4,
+  "required_authorization": true,
+  "require_semantic_decision": true,
+  "overrides": {
+    "max_rounds": 1,
+    "scenarios_per_round": 200,
+    "adaptive_pairs_per_round": 80,
+    "preference_training": false,
+    "training": {
+      "use_rslora": true,
+      "replay_previous_rounds": false
+    }
+  },
+  "development_cases": 360,
+  "development_sha256": "9dd6625a3b2552a8bb780e5efa9c927fcd7caff3e55c1da741004ecc5f5664e2",
+  "release_holdout": "excluded_from_this_experiment",
+  "comparators": {
+    "initial_adapter_weights_sha256": "c0d7bcf5fdfec3a2ff0459f4f8125ee49c7ecae5ae1413ace2ebe051d8f01eba",
+    "historical_sft_weights_sha256": "f1d947c2697da695833f57ec00715d033895002615fb85aa88c778fb2b0cd335"
+  }
+}

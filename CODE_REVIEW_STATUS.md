@@ -47,3 +47,12 @@ checksum and integrity, and isolated CPU imports. No live GPU trainer,
 mounted Drive, or paid API was exercised. Existing frozen artifacts were
 preserved. The SFT-only semantic result and external re-review both remain
 pending. The previous deferred concurrency and held-out loss work is unchanged.
+
+## Semantic safety investigation checkpoint
+
+The 46 flagged development cases reconcile with the saved diagnostic and frozen
+sources. The provisional audit records 31 source-supported errors, five apparent
+judge false positives, one possible rubric issue and nine second-review cases.
+The 200 selected historical pairs passed the frozen split exclusion check.
+Review the audit, root cause analysis, and blocked one-round design in `reports/`
+and `config/experiments/`. The original diagnostic still blocks continuation.
