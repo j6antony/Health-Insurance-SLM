@@ -185,3 +185,39 @@ def fixed_family_split(config, schemas):
     total = settings.get('total_examples', minimum * len(schemas))
     return fixed_subset(development, schemas, total, minimum,
                         settings.get('subset_seed', config['random_seed'])), holdout
+
+
+def load_saved_split(split_path, corpus_path, schemas):
+    """Rehydrate the original ordered split exclusively by the saved case IDs."""
+    import json
+    from collections import Counter
+
+    split = json.loads(split_path.read_text())
+    corpus = read_jsonl(corpus_path)
+    index = {item['record']['id']: item for item in corpus}
+    if len(index) != len(corpus):
+        raise ValueError('Duplicate case IDs in benchmark corpus')
+    seen_ids, seen_groups, seen_content = set(), set(), set()
+    partitions = []
+    for name, quota in [('development', 20), ('holdout', 6)]:
+        spec = split[name]
+        ids = spec['case_ids']
+        if len(ids) != len(set(ids)) or set(ids) - index.keys() or seen_ids.intersection(ids):
+            raise ValueError(f'Missing, duplicate, or overlapping {name} case IDs')
+        rows = [index[case_id] for case_id in ids]
+        if digest(rows) != spec['sha256']:
+            raise ValueError(f'{name} benchmark hash mismatch')
+        if len(schemas) != 18 or Counter(x['record']['task'] for x in rows) != dict.fromkeys(schemas, quota):
+            raise ValueError(f'{name} benchmark task coverage mismatch')
+        groups = {x['source_group'] for x in rows}
+        content = {digest(x['record']['scenario']) for x in rows}
+        if sorted(groups) != spec['source_groups'] or seen_groups & groups or seen_content & content:
+            raise ValueError(f'{name} source group or content mismatch')
+        for item in rows:
+            record = item['record']
+            validate_answer(record, item['reference'], schemas[record['task']])
+        seen_ids.update(ids)
+        seen_groups.update(groups)
+        seen_content.update(content)
+        partitions.append(rows)
+    return tuple(partitions)

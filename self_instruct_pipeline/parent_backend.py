@@ -153,7 +153,8 @@ class OpenAIParent(JSONParent):
             raise ParentError('OpenAI did not confirm the configured model')
         return {'model': result['id'], 'provider': 'openai'}
 
-    def generate_json(self, messages, response_schema, operation='generation', temperature=None):
+    @staticmethod
+    def request_body(settings, messages, response_schema, temperature=None):
         if len(messages) != 2 or [m['role'] for m in messages] != ['system', 'user']:
             raise ValueError('Backend expects exactly system and user messages')
         # JSON mode accepts an object at the root, while our pipeline also uses
@@ -167,9 +168,9 @@ class OpenAIParent(JSONParent):
             'do not change the fields inside result.\n'
             + json.dumps(response_schema)
         )
-        effort = self.settings.get('reasoning_effort', 'medium')
+        effort = settings.get('reasoning_effort', 'medium')
         body = {
-            'model': self.model,
+            'model': settings['model'],
             'instructions': instructions,
             # Responses JSON mode validates input messages independently of
             # top-level instructions. Ensure JSON intent for EVERY task/operation.
@@ -178,13 +179,17 @@ class OpenAIParent(JSONParent):
                        + messages[1]['content']}],
             'text': {'format': {'type': 'json_object'}},
             'reasoning': {'effort': effort},
-            'max_output_tokens': self.settings['max_output_tokens'],
+            'max_output_tokens': settings['max_output_tokens'],
             'store': False,
             'service_tier': 'default',
         }
         # GPT-6 accepts temperature only with reasoning disabled.
         if effort == 'none':
-            body['temperature'] = self.settings['temperature'] if temperature is None else temperature
+            body['temperature'] = settings['temperature'] if temperature is None else temperature
+        return body
+
+    def generate_json(self, messages, response_schema, operation='generation', temperature=None):
+        body = self.request_body(self.settings, messages, response_schema, temperature)
         result = self._request('/responses', body, operation)
         if result.get('status') != 'completed' or result.get('error') or result.get('incomplete_details'):
             raise ParentError('OpenAI response failed, incomplete, or truncated', True, category='response')

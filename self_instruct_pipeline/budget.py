@@ -14,6 +14,24 @@ class BudgetExceeded(RuntimeError):
     """Stop immediately, outside the pipeline's retryable provider errors."""
 
 
+def reservation_usd(settings, body):
+    rates = RATES.get((settings['provider'], settings['model']))
+    if rates is None:
+        raise BudgetExceeded('No verified pricing for this model; refusing a budgeted API call')
+    reservation = Decimal(0)
+    if body is not None:
+        if settings['provider'] != 'openai' or body.get('service_tier') != 'default':
+            raise BudgetExceeded('Budgeted calls require OpenAI Standard processing')
+        # Conservative text-only token allowance: UTF-8 bytes plus framing.
+        # No cache discount is assumed; allow the higher cache-write rate.
+        input_bound = len(json.dumps(body, ensure_ascii=False).encode('utf-8')) + 4096
+        i, _, o, w = map(Decimal, rates)
+        if input_bound > 272000:
+            i, w, o = i * 2, w * 2, o * Decimal('1.5')
+        reservation = (input_bound * max(i, w) + body['max_output_tokens'] * o) / 1000000
+    return reservation
+
+
 class APIBudget:
     def __init__(self, directory, max_calls=120, max_cost_usd='0.50'):
         if type(max_calls) is not int or max_calls < 1:
@@ -52,20 +70,7 @@ class APIBudget:
                 ACTIVE_BUDGET.reset(token)
 
     def reserve(self, settings, body):
-        rates = RATES.get((settings['provider'], settings['model']))
-        if rates is None:
-            raise BudgetExceeded('No verified pricing for this model; refusing a budgeted API call')
-        reservation = Decimal(0)
-        if body is not None:
-            if settings['provider'] != 'openai' or body.get('service_tier') != 'default':
-                raise BudgetExceeded('Budgeted calls require OpenAI Standard processing')
-            # Conservative text-only token allowance: UTF-8 bytes plus framing.
-            # No cache discount is assumed; allow the higher cache-write rate.
-            input_bound = len(json.dumps(body, ensure_ascii=False).encode('utf-8')) + 4096
-            i, _, o, w = map(Decimal, rates)
-            if input_bound > 272000:
-                i, w, o = i * 2, w * 2, o * Decimal('1.5')
-            reservation = (input_bound * max(i, w) + body['max_output_tokens'] * o) / 1000000
+        reservation = reservation_usd(settings, body)
         accounted = Decimal(self.state['accounted_usd'])
         if self.state['calls'] >= self.limits['max_calls']:
             raise BudgetExceeded(f"API request limit reached ({self.state['calls']}/{self.limits['max_calls']}). "
