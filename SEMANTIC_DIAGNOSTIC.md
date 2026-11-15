@@ -1,7 +1,7 @@
 # Saved checkpoint semantic diagnostic
 
 Use `semantic_diagnostic_colab.ipynb` in a CPU Colab runtime. Upload the matching
-`outputs/colab_distillation_bundle.zip` if prompted, mount Drive, and run the
+`colab_distillation_bundle.zip` from the repository if prompted, mount Drive, and run the
 first code cell. It checks the split, all three Pass A prediction files, their
 generation artifacts and the original adapter hashes. It produces
 `cost_preflight.json` without contacting the judge. The second code cell takes
