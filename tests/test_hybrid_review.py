@@ -169,7 +169,7 @@ class HybridReviewTests(unittest.TestCase):
         self.assertEqual(refill_window(0, {'one': 1, 'two': 2}, 8), 3)
         self.assertEqual(refill_window(0, {}, 8), 0)
 
-    def test_two_round_end_to_end_with_mock_api_and_research_continuation(self):
+    def test_four_round_end_to_end_with_mock_api_and_research_continuation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'run'
             parent, config = distillation_1000_configs(load_config(), load_loop_config(), root)
@@ -210,7 +210,7 @@ class HybridReviewTests(unittest.TestCase):
                     evaluated.append(directory.name)
                     attempt = len(evaluated)
                     summary = with_safety_evidence({
-                        **report((.4, .6, .55)[attempt - 1]), 'examples_per_task': dict.fromkeys(SCHEMAS, 20)})
+                        **report((.4, .6, .55, .56, .57)[attempt - 1]), 'examples_per_task': dict.fromkeys(SCHEMAS, 20)})
                     summary.update(adapter_sha256=self.runtime.restored_adapter[1], generation_key='mock')
                     if attempt == 2:
                         next(iter(summary['case_scores'].values()))['unsupported_claims'] = True
@@ -234,14 +234,16 @@ class HybridReviewTests(unittest.TestCase):
                 self.assertEqual(first['completed_rounds'], 1)
                 self.assertNotEqual(first['next_round_start_checkpoint'], first['best_checkpoint'])
                 self.assertEqual(runtime.restores[-1], first['best_checkpoint'])
-                result = run_loop(runtime, parent, config, round_limit=2)
+                result = run_loop(runtime, parent, config, round_limit=4)
                 self.assertEqual(export_usage(root)['calls'], budget.state['calls'])
                 self.assertEqual(sum(provider.calls.values()), budget.state['calls'])
                 with self.assertRaisesRegex(ValueError, 'release scoring separate'):
                     run_loop(runtime, parent, config, evaluate_release=True)
 
-            self.assertEqual(evaluated, ['baseline', 'lighteval', 'lighteval'])
-            self.assertEqual(len(runtime.trains), 2)
+            self.assertEqual(evaluated, ['baseline', *['lighteval'] * 4])
+            self.assertEqual(len(runtime.trains), 4)
+            self.assertEqual(result['completed_rounds'], 4)
+            self.assertEqual(result['status'], 'max_rounds_reached')
             registry = ExclusionRegistry(development + holdout)
             prior_content = set()
             for index, pairs in enumerate(runtime.trains, 1):
@@ -257,7 +259,7 @@ class HybridReviewTests(unittest.TestCase):
             top = result['experimental_macro_rank'][0]
             self.assertTrue(top['safety_failures'])
             self.assertFalse(top['release_eligible'])
-            self.assertEqual(runtime.starts[1], str(Path(top['checkpoint']).resolve()))
+            self.assertEqual(runtime.starts[1:], [str(Path(top['checkpoint']).resolve())] * 3)
             self.assertNotEqual(result['best_checkpoint'], top['checkpoint'])
             self.assertIsNone(result['release_checkpoint'])
             stages = json.loads((root / 'api_stage_profile.json').read_text())

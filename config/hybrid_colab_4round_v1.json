@@ -1,0 +1,14 @@
+{
+  "version": "hybrid-v1",
+  "max_rounds": 4,
+  "scenarios_per_round": 200,
+  "hybrid_curriculum": {
+    "deterministic": 60,
+    "general": 60,
+    "adaptive": 80,
+    "buffer": 8,
+    "workers": 4,
+    "batch_size": 3,
+    "requests_per_second": 4
+  }
+}

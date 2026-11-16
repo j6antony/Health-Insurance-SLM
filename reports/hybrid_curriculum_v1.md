@@ -94,3 +94,18 @@ evaluations exercised checkpoint policy without live semantic judge requests.
 The stage export distinguishes summed request durations, elapsed spans and
 the union of active request intervals, so concurrent time is counted once.
 Colab wall time, provider behavior and real score changes remain unmeasured.
+
+## Four-round Colab preset
+
+Use `distillation_colab_hybrid_4round.ipynb` with the matching bundle and
+`colab_l4_hybrid_fresh_4round_v1` Drive directory. This preset trains four
+rounds of 200 fresh examples each, evaluates the baseline and each candidate
+on the frozen development set, and shares a single cumulative API cap.
+It checks the required historical and remediation plans plus the prior
+one-round hybrid plan if that plan exists when the new run is configured.
+A resumed run keeps its original exclusion plan list.
+
+`RESEARCH_MACRO_CONTINUATION` defaults to false. Set it before the first
+launch if you want the highest-scoring experimental checkpoint to start
+later rounds. Accepted checkpoints still use the existing safety gates.
+The release holdout is excluded from training and is not evaluated.
