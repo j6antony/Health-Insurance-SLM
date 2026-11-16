@@ -6,7 +6,7 @@ from pathlib import Path
 
 from self_instruct_pipeline.config import resolve_path
 from self_instruct_pipeline.deduplicator import fingerprint
-from self_instruct_pipeline.persistence import atomic_json, atomic_jsonl, digest, read_jsonl
+from self_instruct_pipeline.persistence import Store, atomic_json, atomic_jsonl, digest, read_jsonl
 from self_instruct_pipeline.pipeline import Pipeline
 from self_instruct_pipeline.validation import validate_answer, validate_audit
 from .leakage import exclusion_record

@@ -1,6 +1,9 @@
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from distillation_loop.data import scenario_canary
 from distillation_loop.leakage import ExclusionRegistry
 from self_instruct_pipeline.config import load_config
 from self_instruct_pipeline.parent_backend import ParentError
@@ -75,3 +78,23 @@ class ScenarioResumeTests(unittest.TestCase):
         self.assertEqual(accepted['recovered_from_rejection_id'], 'legacy')
         self.assertEqual(self.pipeline.recover_legacy_batch('legacy'), [])
         self.assertEqual([operation for operation, _ in self.parent.calls], ['scenario_audit'])
+
+    def test_canary_entry_point_accepts_and_verifies_one_pair(self):
+        root = Path(self.pipeline.config['paths']['output_dir']) / 'run'
+        root.mkdir()
+        split = root.parent / 'original_split.json'
+        split.write_text('{}')
+        (root / 'evaluation_split.json').write_text('{}')
+        (root / 'heldout_teacher_loss_split.json').write_text('{}')
+        corpus = root.parent / 'corpus.jsonl'
+        corpus.touch()
+        config = {'output_dir': str(root), 'historical_training_plan': str(root / 'plan.json'),
+                  'evaluation': {'split_path': str(split), 'validation_path': str(corpus)}}
+        with (patch('distillation_loop.benchmarks.load_benchmarks', return_value=([], [])),
+              patch('distillation_loop.leakage.freeze_loss_split', return_value={'rows': []}),
+              patch('self_instruct_pipeline.pipeline.create_parent', return_value=self.parent)):
+            result = scenario_canary(self.pipeline.config, config)
+        self.assertEqual(result, {'accepted_before': 0, 'accepted_after': 1,
+                                  'accepted_new': 1, 'verified_canary_pairs': 1})
+        self.assertEqual([operation for operation, _ in self.parent.calls],
+                         ['scenario_generation', 'scenario_audit', 'teacher_answer', 'answer_audit'])
