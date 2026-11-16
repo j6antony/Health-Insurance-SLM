@@ -55,6 +55,7 @@ class Pipeline:
         self.exclusions = list(exclusions)
         self.exclusion_guard = None
         self.model_checked = False
+        self.request_options = None
         self.accepted = self.store.unique_records('accepted_scenarios.jsonl', 'id')
         if len({r['fingerprint'] for r in self.accepted}) != len(self.accepted):
             raise ValueError('Duplicate accepted scenario fingerprints')
@@ -134,6 +135,10 @@ class Pipeline:
             from .usage import UsageLogger
             logger = UsageLogger(self.store.directory)
             self.parent = create_parent(self.config['parent'], logger=logger)
+            if self.request_options:
+                from .parallel import CachedParent
+                self.parent = CachedParent(self.parent, self.store.path('request_cache'),
+                                           self.config['parent'], requests_per_second=self.request_options['requests_per_second'])
         if not self.model_checked:
             result = self.parent.check_model()
             self.model_checked = True
@@ -395,6 +400,26 @@ class Pipeline:
             self.reject('answer_audit_format', reason, {'scenario_id': row['id'], 'answer': answer})
         raise ParentError('Audit JSON remained malformed after its cumulative attempt limit', True)
 
+    def _prefetch_answers(self, rows):
+        if not rows:
+            return
+        from .parallel import batch_requests
+        parent = self.client()
+        if not hasattr(parent, 'cached'):
+            return
+        options = self.request_options
+        requests = [(teacher_messages(row, self.schemas), self.schemas[row['task']]) for row in rows]
+        batch_requests(parent, requests, 'teacher_answer', options['workers'], options['batch_size'])
+        audits = []
+        for row, (messages, schema) in zip(rows, requests):
+            answer = parent.cached(messages, schema, 'teacher_answer')
+            try:
+                validate_answer(row, answer, schema)
+            except ValidationError:
+                continue  # The regular answer path records the rejection and repairs it.
+            audits.append((verification_messages(row, answer, self.schemas), AUDIT_SCHEMA))
+        batch_requests(parent, audits, 'answer_audit', options['workers'], options['batch_size'])
+
     def answer(self, allow_partial=False, scenario_ids=None, max_sample_attempts=3):
         if type(max_sample_attempts) is not int or max_sample_attempts < 1:
             raise ValueError('max_sample_attempts must be a positive integer')
@@ -421,6 +446,10 @@ class Pipeline:
                 feedback_by_id[proposal.get('scenario_id')] = {
                     'validation_error': rejected['reason'], 'proposed_answer': proposal.get('answer'),
                     'audit': proposal.get('audit')}
+        if self.request_options:
+            self._prefetch_answers([row for row in self.accepted if row['id'] not in done
+                                    and not attempt_counts[row['id']] and not previous_failures[row['id']]
+                                    and (scenario_ids is None or row['id'] in scenario_ids)])
         failures = 0
         for row in self.accepted:
             if row['id'] in done or (scenario_ids is not None and row['id'] not in scenario_ids):

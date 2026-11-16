@@ -118,6 +118,10 @@ def run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapte
 
 
 def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, decision, evaluate_release):
+    from .hybrid import options as hybrid_options
+    hybrid = hybrid_options(config)
+    if hybrid and (evaluate_release or not config['evaluation'].get('split_path')):
+        raise ValueError('Hybrid experiments require frozen development and keep release scoring separate')
     store = Store(resolve_path(config['output_dir']))
     backup_target = backup_destination()
     if backup_target == 'kaggle':
@@ -127,6 +131,15 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                             'schemas': schemas, 'student': runtime.identity(), 'scoring': SCORING_VERSION, 'trusted_templates': TEMPLATE_VERSION})
     if config['evaluation'].get('semantic_judge'):
         settings_hash = digest([settings_hash, SemanticJudge.version])
+    historical, history_hashes = [], []
+    if hybrid:
+        from .leakage import historical_records
+        paths = [config['historical_training_plan'], *config.get('hybrid_prior_training_plans', [])]
+        for path in paths:
+            records, plan_hash = historical_records(resolve_path(path), schemas)
+            historical.extend(records)
+            history_hashes.append(plan_hash)
+        settings_hash = digest([settings_hash, 'hybrid-v1', history_hashes])
     state_path = store.path('loop_state.json')
     saved_split = config['evaluation'].get('split_path')
     semantic_scoring = bool(config['evaluation'].get('semantic_judge'))
@@ -251,6 +264,11 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             judge_dir = store.path('benchmark_judging')
             logger = UsageLogger(judge_dir)
             client = create_parent(parent_config['parent'], logger=logger)
+            if hybrid:
+                from self_instruct_pipeline.parallel import CachedParent
+                client = CachedParent(client, judge_dir / 'request_cache', parent_config['parent'],
+                                      requests_per_second=hybrid['requests_per_second'])
+                evaluator.judge_workers = hybrid['workers']
             evaluator.semantic_judge = SemanticJudge(client, judge_dir, schemas)
 
         def controlled_release():
@@ -392,7 +410,11 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
         if state.get('baseline_report') is None:
             print(f'Starting baseline evaluation on {len(development)} examples.', flush=True)
             evaluator.checkpoint_path = state['initial_checkpoint']
+            baseline_started = monotonic()
             report = evaluator.evaluate(development, store.path('baseline'))
+            if hybrid:
+                atomic_json(store.path('baseline/timing.json'),
+                            {'evaluation_seconds': monotonic() - baseline_started})
             validate_report(report, schemas, config['development_examples_per_task'])
             state.update(latest_report=report, best_report=report, baseline_report=report)
             if passed(report):
@@ -421,6 +443,8 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
         data.expanded_templates = config.get('balanced_curriculum', False)
         try:
             data.open()
+            if hybrid:
+                data.pipeline.request_options = hybrid
             for round_id in range(state['completed_rounds'] + 1, limit + 1):
                 directory = store.path(f'round_{round_id:02d}')
                 directory.mkdir(exist_ok=True)
@@ -434,13 +458,13 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     scores = {task: 1 - stats['candidates_with_errors'] / stats['attempts']
                               for task, stats in candidate_feedback.items()
                               if max(stats['error_counts'].values(), default=0) >= 2}
-                    feedback_report = {'per_task': {task: scores.get(task, 1.0) for task in schemas}}
+                    feedback_report = {'per_task': {task: scores.get(task, state['best_report']['per_task'][task] if hybrid else 1.0) for task in schemas}}
                     data.pipeline.training_candidate_feedback = {task: candidate_feedback[task] for task in scores}
                 weights = feedback_weights(data.base_weights, feedback_report, schemas,
                                            config['thresholds']['minimum_task_score'], config['feedback_strength'])
                 if config.get('balanced_curriculum'):
                     weights = {task: min(3.0, max(1.0, weight)) for task, weight in weights.items()}
-                target = round_id * config['scenarios_per_round']
+                target = (1 if hybrid else round_id) * config['scenarios_per_round']
                 frozen_pairs = directory / 'training_plan.json'
                 diagnostics = {}
                 if frozen_pairs.exists():
@@ -452,7 +476,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     pairs = [(x['record'], x['answer']) for x in plan['pairs']]
                 elif adaptive:
                     previous_pairs = []
-                    if round_id > 1:
+                    if round_id > 1 and not hybrid:
                         previous_plan = json.loads((store.path(f'round_{round_id - 1:02d}') /
                                                     'training_plan.json').read_text())
                         if previous_plan['hash'] != digest([previous_plan['pairs'], previous_plan['diagnostics']]):
@@ -464,8 +488,13 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                         return save_predictions(student, records, schemas, folder,
                                                 checkpoint=state['next_round_start_checkpoint'])
 
-                    pairs, diagnostics = adaptive_pairs(
-                        data, runtime, directory, state, config, weights, previous_pairs, predict)
+                    if hybrid:
+                        from .hybrid import hybrid_pairs
+                        pairs, diagnostics = hybrid_pairs(
+                            data, runtime, directory, state, config, weights, predict, historical)
+                    else:
+                        pairs, diagnostics = adaptive_pairs(
+                            data, runtime, directory, state, config, weights, previous_pairs, predict)
                 else:
                     pairs = data.verified_pairs(target, weights)
                 if len({r['id'] for r, _ in pairs}) != len(pairs):
@@ -518,6 +547,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     })
 
                 # 4. Train the existing student adapter, then evaluate it.
+                training_started = monotonic()
                 trained_path = directory / 'training_complete.json'
                 training_hash = digest({'pairs': pairs, 'initial': state['next_round_start_checkpoint'],
                                         'training': config['training'], 'student': runtime.identity()})
@@ -579,6 +609,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                         checkpoint = runtime.train_preferences(new_pairs, preferences, schemas, destination)
                     atomic_json(trained_path, {'checkpoint': checkpoint, 'training_hash': training_hash})
                     print(f'Checkpoint saved: {checkpoint}', flush=True)
+                training_seconds = monotonic() - training_started
                 if state.get('latest_checkpoint') != checkpoint:
                     state.update(latest_checkpoint=checkpoint, latest_report=None)
                     atomic_json(state_path, state)
@@ -586,6 +617,7 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                                experimental=semantic_scoring or bool(saved_split))
                 evaluator.checkpoint_path = checkpoint
                 runtime.restore(checkpoint)
+                evaluation_started = monotonic()
                 report = evaluator.evaluate(development, directory / 'lighteval')
                 validate_report(report, schemas, config['development_examples_per_task'])
 
@@ -614,6 +646,18 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                              'macro_improvement': improvement, 'minimum_macro_improvement': minimum_gain,
                              'quality_target_met': passed(report), 'release_eligible': False,
                              'reasons': reasons}
+                if hybrid:
+                    rank = state.get('experimental_macro_rank', [])
+                    if not rank:
+                        rank = [{'checkpoint': state['initial_checkpoint'],
+                                 'macro': state['baseline_report']['macro_task_score']}]
+                    rank.append({'checkpoint': checkpoint, 'macro': report['macro_task_score'],
+                                 'operational_safety': hard, 'statistical_regression': statistical})
+                    state['experimental_macro_rank'] = sorted(rank, key=lambda row: -row['macro'])
+                    atomic_json(directory / 'experiment_timing.json', {
+                        'evaluation_seconds': monotonic() - evaluation_started,
+                        'training_or_restore_seconds': training_seconds,
+                        'round_elapsed_seconds': monotonic() - round_started})
                 if promoted:
                     state.update(best_report=report, best_checkpoint=checkpoint)
                     if passed(report):

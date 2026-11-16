@@ -188,3 +188,72 @@ def template_pairs(count, schemas, exclusions, *, expanded=False, exclusion_guar
     if len(pairs) != count:
         raise ValueError('Trusted template coverage exhausted by held-out exclusions')
     return pairs
+
+
+def fresh_template_pair(seed, index):
+    """Construct a reproducible independent document case for a specific round."""
+    from random import Random
+
+    rng = Random(f'fresh-rules-v1:{seed}:{index}')
+    case = rng.randrange(10000, 100000000)
+    family = index % 6
+    if family < 3:
+        record, answer = contextual_template_pair(case * 3 + family)
+    else:
+        record, answer = structured_template_pair(case * 3 + family - 3)
+    record.update(id=f'fresh-rules-v1-{seed}-{index}', verification_basis='fresh-rules-v1',
+                  source_group=f'fresh-rules-v1-{seed}-{index}', difficulty=rng.choice(['easy', 'medium', 'hard']))
+    record.pop('template_family', None)
+    documents = record['scenario']['documents']
+    if family == 4 and (index // 6) % 3 != 0:
+        fields = answer['fields']
+        first = fields[0]
+        if (index // 6) % 3 == 1:
+            documents[0]['text'] = f'Intake sheet {case}: the policy-number box is blank.'
+            fields.clear()
+            record.update(case_type='insufficient_evidence', reasoning_variant='missing_policy_number')
+        else:
+            alternate = f'ALT-{rng.randrange(100000, 999999)}'
+            documents.append({'document_id': 'AMENDMENT', 'page_number': 2,
+                              'text': f'Unverified intake amendment: policy number {alternate}. No precedence is established.'})
+            first['requires_review'] = True
+            fields.append({**first, 'value': alternate, 'evidence': alternate, 'page_number': 2})
+            record.update(case_type='contradiction', reasoning_variant='conflicting_policy_numbers')
+        record['instruction'] += ' If values conflict without precedence, report each for review. Omit missing values.'
+    if family == 5 and index % 3 == 2:
+        # Rotate checklist items, operators, and explicit statuses together.
+        checks = rng.sample(['signature', 'service date', 'routing identifier', 'inspection attachment',
+                             'intake stamp', 'submission reference'], 2)
+        present = [rng.choice([True, False]) for _ in checks]
+        use_and = rng.choice([True, False])
+        complete = all(present) if use_and else any(present)
+        missing = [label.capitalize() for label, found in zip(checks, present) if not found]
+        condition = 'both entries' if use_and else 'at least one entry'
+        text = f'Intake record {case}: ' + '; '.join(
+            f'{label} is {"present" if found else "missing"}' for label, found in zip(checks, present))
+        text += f'. The exercise checklist requires {condition}.'
+        documents[0]['text'] = text
+        answer.update(answer='Checklist complete.' if complete else 'Checklist incomplete.',
+                      missing_information=missing if not complete else [], issues=missing,
+                      requires_review=not complete, evidence=[{'document_id': 'RULE', 'quote': text}])
+        record['reasoning_variant'] = f'{condition}:{checks}:{present}'
+    rng.shuffle(documents)
+    record['answer_checks'] = [
+        {'path': [key], 'operation': 'equals', 'operands': [value]}
+        for key, value in answer.items() if key != 'evidence']
+    return record, answer
+
+
+def fresh_template_pairs(count, seed, schemas, exclusion_guard):
+    selected = []
+    for index in range(count * 20):
+        if len(selected) == count:
+            break
+        record, answer = fresh_template_pair(seed, index)
+        if exclusion_guard(record):
+            continue
+        validate_answer(record, answer, schemas[record['task']])
+        selected.append((record, answer))
+    if len(selected) != count:
+        raise ValueError('Fresh deterministic curriculum exhausted its exclusion-safe candidates')
+    return selected

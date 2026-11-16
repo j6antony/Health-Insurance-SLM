@@ -160,6 +160,19 @@ def _export_usage(run_dir):
         writer.writeheader()
         writer.writerows(rows)
     temporary.replace(path)
+    stages = {}
+    for row in rows:
+        stage = stages.setdefault(row['operation'], {'calls': 0, 'request_seconds': 0.0,
+                                                     'first_start': row['timestamp'], 'last_finish': row['timestamp']})
+        stage['calls'] += 1
+        stage['request_seconds'] += float(row.get('duration_seconds', 0) or 0)
+        stage['last_finish'] = max(stage['last_finish'], row.get('finished_at') or row['timestamp'])
+    from datetime import datetime
+    for stage in stages.values():
+        stage['elapsed_span_seconds'] = round((datetime.fromisoformat(stage['last_finish'])
+                                               - datetime.fromisoformat(stage['first_start'])).total_seconds(), 3)
+        stage['request_seconds'] = round(stage['request_seconds'], 3)
+    atomic_json(run_dir / 'api_stage_profile.json', stages)
     return {'csv': str(path), 'calls': len(rows),
             'estimated_cost_usd': str(sum((Decimal(r['estimated_cost_usd']) for r in rows if 'estimated_cost_usd' in r), Decimal(0))),
             'unknown_cost_calls': sum('estimated_cost_usd' not in r for r in rows)}

@@ -121,6 +121,12 @@ class LightevalEvaluator:
             raise ValueError('Stale adjudication does not match this benchmark and prediction')
         if len(predictions) != len(development):
             raise ValueError('Evaluation predictions are incomplete')
+        parallel_scores = None
+        if judge is not None and getattr(self, 'judge_workers', 1) > 1:
+            from self_instruct_pipeline.parallel import bounded_map
+            parallel_scores = bounded_map(
+                lambda pair: judge.grade(pair[0], {**pair[1], 'truncated': incomplete_prediction(pair[1])}),
+                zip(development, predictions), self.judge_workers)
         for index, (item, prediction) in enumerate(zip(development, predictions), 1):
             record, reference = item['record'], item['reference']
             # Keep raw output intact while scoring every incomplete stop as invalid.
@@ -130,7 +136,8 @@ class LightevalEvaluator:
             # never to model.generate or the student's input tokenizer.
             print(f'Evaluation {index}/{len(development)}: {record["task"]} — scoring', flush=True)
             if judge is not None:
-                scores = judge.grade(item, scoring_prediction)
+                scores = (parallel_scores[index - 1] if parallel_scores is not None
+                          else judge.grade(item, scoring_prediction))
             elif scoring_prediction['truncated']:
                 scores = {'task_score': 0.0, 'schema_evidence_valid': 0.0, 'grading_basis': 'incomplete_generation'}
             elif item.get('review', {}).get('status') == 'approved':

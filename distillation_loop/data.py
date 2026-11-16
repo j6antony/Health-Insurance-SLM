@@ -262,3 +262,22 @@ def scenario_canary(parent_config, config, *, recovery_id=None):
                     'accepted_new': len(new_candidates), 'verified_canary_pairs': verified}
         finally:
             data.close()
+
+
+def fresh_teacher_pool(pipeline, target, weights, old_ids, *, eligible=lambda pair: True):
+    """Build up to a fresh, usable pool while retaining interrupted work."""
+    from self_instruct_pipeline.pipeline import GenerationExhausted
+
+    pipeline.scheduler.weights = weights
+    for attempt in range(4):
+        ids = {record['id'] for record in pipeline.accepted if record['id'] not in old_ids}
+        pipeline.answer(allow_partial=True, scenario_ids=ids)
+        pairs = [pair for pair in checked_pairs(pipeline) if pair[0]['id'] in ids and eligible(pair)]
+        if len(pairs) >= target or attempt == 3:
+            return pairs
+        pipeline.config['generation']['target_accepted_scenarios'] = len(pipeline.accepted) + target - len(pairs)
+        try:
+            pipeline.generate()
+        except GenerationExhausted:
+            if not {record['id'] for record in pipeline.accepted} - ids - set(old_ids):
+                return pairs

@@ -16,7 +16,7 @@ def build(output=None, update_notebook=True):
         files.extend(sorted((ROOT/directory).glob('*.py')))
     files.extend(ROOT/name for name in (
         'requirements-colab.txt','config/self_instruct.json','config/distillation_loop.json',
-        'config/experiments/semantic-remediation-round1-v1.json',
+        'config/experiments/semantic-remediation-round1-v1.json', 'config/hybrid_colab_v1.json',
         'data/self_instruct/seed_tasks.jsonl','data/self_instruct/task_schemas.json',
         'data/self_instruct/GENERATION_PROMPT.md',
         'data/evaluation/fixed_validation_v1.jsonl','data/evaluation/fixed_validation_v1.manifest.json',
@@ -34,7 +34,7 @@ def build(output=None, update_notebook=True):
                     for path in sorted(files)}
         for name in ('distillation_colab_100.ipynb', 'distillation_colab_1000.ipynb',
                      'distillation_kaggle_100.ipynb', 'semantic_diagnostic_colab.ipynb',
-                     'distillation_colab_semantic_remediation_round1.ipynb'):
+                     'distillation_colab_semantic_remediation_round1.ipynb', 'distillation_colab_hybrid_round1.ipynb'):
             notebook = ROOT / name
             nb = json.loads(notebook.read_text())
             for cell in nb['cells']:
