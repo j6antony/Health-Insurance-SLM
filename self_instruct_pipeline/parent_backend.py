@@ -12,8 +12,9 @@ from .budget import ACTIVE_BUDGET
 
 
 class ParentError(RuntimeError):
-    def __init__(self, message, retryable=False, *, category=None):
+    def __init__(self, message, retryable=False, *, category=None, metadata=None):
         super().__init__(message)
+        self.metadata = metadata or {}
         self.retryable = retryable
         self.category = category or ('response' if 'JSON' in message else 'service')
 
@@ -89,7 +90,9 @@ class JSONParent:
                 if not transient or attempt == self.settings['max_retries']:
                     diagnostic = ', '.join(f'{key}={value}' for key, value in details.items())
                     suffix = f' ({diagnostic})' if diagnostic else ''
-                    raise ParentError(f'{self.NAME} HTTP {exc.code} during {operation}{suffix}', transient) from None
+                    raise ParentError(
+                        f'{self.NAME} HTTP {exc.code} during {operation}{suffix}', transient,
+                        metadata={'http_status': exc.code, 'operation': operation, **details}) from None
                 delay = min(30, float(retry_after)) if retry_after.isdigit() else min(30, 2 ** attempt)
                 self._sleep(delay)
             except (urllib.error.URLError, TimeoutError, OSError):

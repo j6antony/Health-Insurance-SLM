@@ -216,3 +216,49 @@ def repair_development_task(base_config, loop_config, output_dir, task='field_ex
         pipeline.answer(allow_partial=True, scenario_ids={candidate['id']}, max_sample_attempts=4)
         return {'task': task, 'scenario_id': candidate['id'],
                 'validated': any(r['id'] == candidate['id'] for r, _ in checked_pairs(pipeline))}
+
+
+def scenario_canary(parent_config, config, *, recovery_id=None):
+    """Run one generation batch or re-audit one legacy batch in the existing run."""
+    from .benchmarks import load_benchmarks
+    from .leakage import ExclusionRegistry, freeze_loss_split
+
+    root = resolve_path(config['output_dir'])
+    store = Store(root)
+    schemas = json.loads(resolve_path(parent_config['paths']['schemas']).read_text())['tasks']
+    with store.lock():
+        development, holdout = load_benchmarks(config, schemas)
+        split = resolve_path(config['evaluation']['split_path'])
+        if json.loads(store.path('evaluation_split.json').read_text()) != json.loads(split.read_text()):
+            raise ValueError('Saved evaluation split differs from the original')
+        frozen_loss = store.path('heldout_teacher_loss_split.json')
+        if not frozen_loss.is_file():
+            raise ValueError('Expected the existing run and its frozen teacher-loss split')
+        candidates = config.get('teacher_loss_candidates')
+        loss = freeze_loss_split(
+            frozen_loss, resolve_path(config['historical_training_plan']), development + holdout,
+            schemas, candidates_path=resolve_path(candidates) if candidates else None,
+            exposure_roots=[resolve_path(path) for path in config.get('historical_exposure_roots', ())])
+        registry = ExclusionRegistry(development + holdout + loss['rows'])
+        corpus = read_jsonl(resolve_path(config['evaluation']['validation_path']))
+        data = CurriculumData(parent_config, corpus + loss['rows'], root)
+        data.exclusion_registry = registry
+        try:
+            data.open()
+            pipeline = data.pipeline
+            before = len(pipeline.accepted)
+            if recovery_id:
+                pipeline.recover_legacy_batch(recovery_id)
+            else:
+                pipeline.config['generation']['target_accepted_scenarios'] = before + 1
+                pipeline.generate(one_batch=True)
+            new_candidates = pipeline.accepted[before:]
+            verified = 0
+            if new_candidates:
+                sample_id = new_candidates[0]['id']
+                pipeline.answer(allow_partial=True, scenario_ids={sample_id}, max_sample_attempts=1)
+                verified = sum(record['id'] == sample_id for record, _ in checked_pairs(pipeline))
+            return {'accepted_before': before, 'accepted_after': len(pipeline.accepted),
+                    'accepted_new': len(new_candidates), 'verified_canary_pairs': verified}
+        finally:
+            data.close()

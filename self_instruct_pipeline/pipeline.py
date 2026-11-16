@@ -180,7 +180,9 @@ class Pipeline:
                 'schemas': list(quotas), 'messages': messages}
 
     def reject(self, phase, reason, record=None, batch_id=None):
-        if phase.startswith('scenario'):
+        if phase == 'scenario_provider_rejection':
+            failure_type, repairable = 'provider_rejection', False
+        elif phase.startswith('scenario'):
             failure_type, repairable = ('duplicate' if 'duplicate' in reason.lower() else 'scenario_error'), False
         elif phase.endswith('_api'):
             failure_type, repairable = ('format_error' if 'JSON' in reason else 'api_error'), 'JSON' in reason
@@ -192,7 +194,116 @@ class Pipeline:
         self.store.append('rejected_records.jsonl', {'failure_type': failure_type, 'repairable': repairable, 'id': str(uuid.uuid4()), 'timestamp': now(),
                           'phase': phase, 'reason': reason, 'batch_id': batch_id, 'record': record})
 
-    def generate(self, task_targets=None):
+    def _audit_and_accept(self, records, plan, batch_id, *, recovered_from=None):
+        count = sum(plan['task_quotas'].values())
+        accepted_this_batch = []
+        # Batch shape/quotas must be coherent, but invalid individual
+        # scenarios are quarantined without losing their valid peers.
+        if not isinstance(records, list) or not records or len(records) > 2 * count:
+            raise ValidationError('Generation batch envelope invalid')
+        valid, ids = [], set()
+        task_counts, difficulty_counts = Counter(), Counter()
+        for row in records:
+            try:
+                validate_scenario(row, self.schemas, self.references)
+                if recovered_from is not None and self.dedup.check(row):
+                    continue
+                if row['generation_id'] in ids:
+                    raise ValidationError('Duplicate generation ID within batch')
+                if task_counts[row['task']] >= plan['task_quotas'].get(row['task'], 0):
+                    raise ValidationError('Scenario exceeds requested task quota')
+                if difficulty_counts[row['difficulty']] >= plan['difficulty'].get(row['difficulty'], 0):
+                    raise ValidationError('Scenario exceeds requested difficulty quota')
+                ids.add(row['generation_id'])
+                task_counts[row['task']] += 1
+                difficulty_counts[row['difficulty']] += 1
+                valid.append(row)
+            except ValidationError as exc:
+                self.reject('scenario_validation', str(exc), row, batch_id)
+        records = valid
+        if not records:
+            return []
+        neighbors = {r['generation_id']: self.dedup.neighbors(r) for r in records}
+        audit_messages = scenario_audit_messages(records, neighbors)
+        audits = self.client().generate_json(audit_messages,
+                                       scenario_audit_schema([r['generation_id'] for r in records]),
+                                       'scenario_audit', temperature=0.0)
+        if not isinstance(audits, list):
+            raise ValidationError('Scenario audit must return an array')
+        audit_ids = Counter(a.get('generation_id') for a in audits if isinstance(a, dict))
+        by_id = {a.get('generation_id'): a for a in audits if isinstance(a, dict)}
+        audit_schema = scenario_audit_schema([r['generation_id'] for r in records])['items']
+        for index, row in enumerate(records):
+            audit = by_id.get(row['generation_id'])
+            try:
+                if audit_ids[row['generation_id']] != 1:
+                    raise ValidationError('Missing/duplicate scenario audit')
+                validate_schema(audit, audit_schema)
+                related_ids = {r['id'] for r in neighbors[row['generation_id']]}
+                related_ids.update(r['generation_id'] for r in records[:index])
+                if audit['duplicate_of'] and audit['duplicate_of'] not in related_ids:
+                    raise ValidationError('Novelty audit cites an unknown comparison ID')
+            except ValidationError as exc:
+                self.reject('scenario_audit', str(exc), {'scenario': row, 'audit': audit}, batch_id)
+                continue
+            reason = self.dedup.check(row)
+            if (self.exclusion_guard and self.exclusion_guard(row)) or self.exclusion_dedup.check(row):
+                reason = 'held_out_overlap'
+            if audit['duplicate_of']:
+                reason = 'semantic_duplicate:' + audit['duplicate_of']
+            if not audit['usable'] or reason:
+                self.reject('scenario', reason or 'scenario_audit_failed', {'scenario': row, 'audit': audit}, batch_id)
+                continue
+            from .deduplicator import fingerprint
+            record = {**row, 'id': str(uuid.uuid4()), 'batch_local_generation_id': row['generation_id'],
+                      'batch_id': batch_id, 'created_at': now(), 'seed_ids': plan['seed_ids'],
+                      'parent': {'provider': self.config['parent']['provider'], 'model': self.config['parent']['model']},
+                      'settings': self.config['parent'], 'prompt_hash': digest(self.system),
+                      'scenario_audit_prompt_hash': digest(audit_messages),
+                      'validation_status': 'scenario_checks_passed', 'scenario_audit': audit,
+                      'coverage_dimensions': audit['coverage_dimensions'], 'fingerprint': fingerprint(row)}
+            if recovered_from is not None:
+                record['recovered_from_rejection_id'] = recovered_from
+            self.store.append('accepted_scenarios.jsonl', record)
+            self.accepted.append(record)
+            self.scheduler.update([record])
+            self.dedup.add(record)
+            accepted_this_batch.append(record)
+        return accepted_this_batch
+
+    def recover_legacy_batch(self, rejection_id):
+        """Revalidate and freshly audit one batch lost to the missing-ID bug."""
+        rows = [row for row in self.store.read('rejected_records.jsonl')
+                if row.get('id') == rejection_id and row.get('phase') == 'scenario_validation'
+                and row.get('reason') == "'id'" and isinstance(row.get('record'), list)]
+        if len(rows) != 1:
+            raise ValueError('Expected one legacy missing-ID rejection with saved candidates')
+        row = rows[0]
+        plans = [plan for plan in self.store.read('generation_batches.jsonl')
+                 if plan['batch_id'] == row['batch_id']]
+        if len(plans) != 1 or self.exclusion_guard is None:
+            raise ValueError('Recovery requires original batch metadata and the frozen exclusion registry')
+        if any(row['rejection_id'] == rejection_id
+               for row in self.store.read('scenario_recovery_receipts.jsonl')):
+            return []
+        try:
+            recovered = self._audit_and_accept(row['record'], plans[0], row['batch_id'],
+                                               recovered_from=rejection_id)
+        except ParentError as exc:
+            self._reject_scenario_api(exc, row['batch_id'])
+            raise
+        self.store.append('scenario_recovery_receipts.jsonl', {
+            'rejection_id': rejection_id, 'accepted_ids': [item['id'] for item in recovered]})
+        self.checkpoint()
+        return recovered
+
+    def _reject_scenario_api(self, exc, batch_id):
+        metadata = getattr(exc, 'metadata', {})
+        phase = ('scenario_provider_rejection' if metadata.get('http_status') and not exc.retryable
+                 else 'scenario_api')
+        self.reject(phase, str(exc), metadata or None, batch_id)
+
+    def generate(self, task_targets=None, *, one_batch=False):
         target = self.config['generation']['target_accepted_scenarios']
         goal = digest({'target': target, 'task_targets': task_targets})
         limit_path = self.store.path('generation_limits.json')
@@ -226,94 +337,33 @@ class Pipeline:
             self.store.append('generation_batches.jsonl', {'batch_id': batch_id, 'generation_goal': goal, 'timestamp': now(),
                               'task_quotas': plan['task_quotas'], 'difficulty': plan['difficulty'], 'seed_ids': plan['seed_ids']})
             accepted_this_batch = []
-            for attempt in range(self.config['generation']['max_retries_per_batch'] + 1):
+            for attempt in range(1 if one_batch else self.config['generation']['max_retries_per_batch'] + 1):
                 records = None
                 try:
                     print(f'Generating scenarios: accepted={len(self.accepted)}/{target}, batch={batches}/{limits[goal]["max_batches"]}, tasks={plan["task_quotas"]}', flush=True)
                     client = self.client()
                     count = sum(plan['task_quotas'].values())
                     records = client.generate_json(plan['messages'], batch_schema(plan['task_quotas'], count), 'scenario_generation')
-                    # Batch shape/quotas must be coherent, but invalid individual
-                    # scenarios are quarantined without losing their valid peers.
-                    if not isinstance(records, list) or not records or len(records) > 2 * count:
-                        raise ValidationError('Generation batch envelope invalid')
-                    valid, ids = [], set()
-                    task_counts, difficulty_counts = Counter(), Counter()
-                    for row in records:
-                        try:
-                            validate_scenario(row, self.schemas, self.references)
-                            if row['generation_id'] in ids:
-                                raise ValidationError('Duplicate generation ID within batch')
-                            if task_counts[row['task']] >= plan['task_quotas'].get(row['task'], 0):
-                                raise ValidationError('Scenario exceeds requested task quota')
-                            if difficulty_counts[row['difficulty']] >= plan['difficulty'].get(row['difficulty'], 0):
-                                raise ValidationError('Scenario exceeds requested difficulty quota')
-                            ids.add(row['generation_id'])
-                            task_counts[row['task']] += 1
-                            difficulty_counts[row['difficulty']] += 1
-                            valid.append(row)
-                        except (ValidationError, KeyError, TypeError) as exc:
-                            self.reject('scenario_validation', str(exc), row, batch_id)
-                    records = valid
-                    if not records:
-                        break
-                    neighbors = {r['generation_id']: self.dedup.neighbors(r) for r in records}
-                    audits = client.generate_json(scenario_audit_messages(records, neighbors),
-                                                   scenario_audit_schema([r['generation_id'] for r in records]),
-                                                   'scenario_audit', temperature=0.0)
-                    if not isinstance(audits, list):
-                        raise ValidationError('Scenario audit must return an array')
-                    audit_ids = Counter(a.get('generation_id') for a in audits if isinstance(a, dict))
-                    by_id = {a.get('generation_id'): a for a in audits if isinstance(a, dict)}
-                    audit_schema = scenario_audit_schema([r['generation_id'] for r in records])['items']
-                    for index, row in enumerate(records):
-                        audit = by_id.get(row['generation_id'])
-                        try:
-                            if audit_ids[row['generation_id']] != 1:
-                                raise ValidationError('Missing/duplicate scenario audit')
-                            validate_schema(audit, audit_schema)
-                            related_ids = {r['id'] for r in neighbors[row['generation_id']]}
-                            related_ids.update(r['generation_id'] for r in records[:index])
-                            if audit['duplicate_of'] and audit['duplicate_of'] not in related_ids:
-                                raise ValidationError('Novelty audit cites an unknown comparison ID')
-                        except (ValidationError, KeyError, TypeError) as exc:
-                            self.reject('scenario_audit', str(exc), {'scenario': row, 'audit': audit}, batch_id)
-                            continue
-                        reason = self.dedup.check(row)
-                        if (self.exclusion_guard and self.exclusion_guard(row)) or self.exclusion_dedup.check(row):
-                            reason = 'held_out_overlap'
-                        if audit['duplicate_of']:
-                            reason = 'semantic_duplicate:' + audit['duplicate_of']
-                        if not audit['usable'] or reason:
-                            self.reject('scenario', reason or 'scenario_audit_failed', {'scenario': row, 'audit': audit}, batch_id)
-                            continue
-                        from .deduplicator import fingerprint
-                        record = {**row, 'id': str(uuid.uuid4()), 'batch_local_generation_id': row['generation_id'],
-                                  'batch_id': batch_id, 'created_at': now(), 'seed_ids': plan['seed_ids'],
-                                  'parent': {'provider': self.config['parent']['provider'], 'model': self.config['parent']['model']},
-                                  'settings': self.config['parent'], 'prompt_hash': digest(self.system),
-                                  'scenario_audit_prompt_hash': digest(scenario_audit_messages(records, neighbors)),
-                                  'validation_status': 'scenario_checks_passed', 'scenario_audit': audit,
-                                  'coverage_dimensions': audit['coverage_dimensions'], 'fingerprint': fingerprint(row)}
-                        self.store.append('accepted_scenarios.jsonl', record)
-                        self.accepted.append(record)
-                        self.scheduler.update([record])
-                        self.dedup.add(record)
-                        accepted_this_batch.append(record)
+                    accepted_this_batch = self._audit_and_accept(records, plan, batch_id)
                     break
                 except (ParentError, BudgetExceeded) as exc:
-                    self.reject('scenario_api', str(exc), batch_id=batch_id)
+                    self._reject_scenario_api(exc, batch_id)
                     if getattr(exc, 'category', 'service') == 'service':
+                        if getattr(exc, 'metadata', {}).get('http_status') and not exc.retryable:
+                            self.checkpoint()
+                            raise
                         self.store.append('generation_transport_failures.jsonl', {'batch_id': batch_id, 'generation_goal': goal})
                         self.checkpoint()
                         raise
                     if not exc.retryable:
                         self.checkpoint()
                         raise
-                except (ValidationError, KeyError, TypeError) as exc:
+                except ValidationError as exc:
                     self.reject('scenario_validation', str(exc), records, batch_id)
             self.checkpoint()
             print(f'Accepted scenarios: {len(self.accepted)}/{target}; batch accepted: {len(accepted_this_batch)}', flush=True)
+            if one_batch:
+                return len(self.accepted)
             failures = 0 if accepted_this_batch else failures + 1
             if failures >= self.config['generation']['max_consecutive_failed_batches']:
                 raise GenerationExhausted('Stopped after consecutive failed batches; inspect rejected_records.jsonl')
@@ -340,7 +390,7 @@ class Pipeline:
                 if not exc.retryable:
                     raise
                 reason = str(exc)
-            except (ValidationError, KeyError, TypeError) as exc:
+            except ValidationError as exc:
                 reason = str(exc)
             self.reject('answer_audit_format', reason, {'scenario_id': row['id'], 'answer': answer})
         raise ParentError('Audit JSON remained malformed after its cumulative attempt limit', True)
@@ -421,7 +471,7 @@ class Pipeline:
                         raise
                     if not exc.retryable:
                         break
-                except (ValidationError, KeyError, TypeError) as exc:
+                except ValidationError as exc:
                     self.reject('answer_validation', str(exc), {'scenario_id': row['id'], 'answer': answer, 'audit': audit})
                     feedback_by_id[row['id']] = {'validation_error': str(exc),
                                                  'proposed_answer': answer, 'audit': audit}

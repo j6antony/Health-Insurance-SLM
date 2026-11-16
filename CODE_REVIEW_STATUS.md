@@ -66,3 +66,16 @@ The user reported independent review complete and authorized making the old
 diagnostic advisory for the dedicated one-round experiment. That notebook
 still requires explicit launch authorization. Candidate safety and rollback
 are enforced by the existing controller.
+
+The controlled Colab run completed its baseline but stopped during generation.
+A raw scenario carries a batch-local generation ID and has no permanent ID until
+acceptance. The exclusion registry now applies content, family and near-duplicate
+checks at that stage. Unexpected programming errors propagate without a
+generation retry. HTTP 400 invalid_prompt was a separate provider rejection
+with no disclosed cause. Its sanitized metadata is retained without retry.
+
+The original rejection journal contains 263 candidate rows across 33 attempts.
+Recovery can freshly validate and audit a selected legacy rejection under the
+same frozen exclusions. Canary and recovery use the existing cumulative budget
+and live Supabase sync. A one-batch canary also verifies one teacher target
+before the operator resumes training.

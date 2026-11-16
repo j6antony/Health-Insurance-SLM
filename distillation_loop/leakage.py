@@ -56,7 +56,7 @@ class ExclusionRegistry:
             self.dedup.add(record)
 
     def match(self, record):
-        if record['id'] in self.ids:
+        if record.get('id') in self.ids:
             return 'scenario_id'
         if self.groups & source_groups(record):
             return 'source_family'
