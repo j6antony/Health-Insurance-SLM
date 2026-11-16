@@ -86,10 +86,19 @@ def batch_requests(parent, requests, operation, workers, batch_size):
     chunks = [rows[i:i + batch_size] for rows in groups.values()
               for i in range(0, len(rows), batch_size)]
 
+    def fetch_single(messages, schema):
+        try:
+            parent.generate_json(messages, schema, operation, temperature=0.0)
+        except ValidationError:
+            pass  # Let the ordinary per-case repair path handle it.
+        except ParentError as exc:
+            if exc.category != 'response' or not exc.retryable:
+                raise
+
     def fetch(chunk):
         if len(chunk) == 1:
             messages, schema = chunk[0]
-            parent.generate_json(messages, schema, operation, temperature=0.0)
+            fetch_single(messages, schema)
             return
         ids = [str(i) for i in range(len(chunk))]
         schema = chunk[0][1]
@@ -109,7 +118,7 @@ def batch_requests(parent, requests, operation, workers, batch_size):
             # A malformed response can fall back to independent requests.
             # HTTP/provider rejections and budget stops always propagate.
             for original, item_schema in chunk:
-                parent.generate_json(original, item_schema, operation, temperature=0.0)
+                fetch_single(original, item_schema)
             return
         for i, (original, item_schema) in zip(ids, chunk):
             parent.remember(original, item_schema, operation, result[i])

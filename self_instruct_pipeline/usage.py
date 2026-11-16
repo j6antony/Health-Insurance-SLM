@@ -160,15 +160,26 @@ def _export_usage(run_dir):
         writer.writeheader()
         writer.writerows(rows)
     temporary.replace(path)
-    stages = {}
+    from datetime import datetime
+    stages, intervals = {}, {}
     for row in rows:
         stage = stages.setdefault(row['operation'], {'calls': 0, 'request_seconds': 0.0,
                                                      'first_start': row['timestamp'], 'last_finish': row['timestamp']})
         stage['calls'] += 1
         stage['request_seconds'] += float(row.get('duration_seconds', 0) or 0)
-        stage['last_finish'] = max(stage['last_finish'], row.get('finished_at') or row['timestamp'])
-    from datetime import datetime
-    for stage in stages.values():
+        finish = row.get('finished_at') or row['timestamp']
+        stage['last_finish'] = max(stage['last_finish'], finish)
+        intervals.setdefault(row['operation'], []).append(
+            (datetime.fromisoformat(row['timestamp']), datetime.fromisoformat(finish)))
+    for operation, stage in stages.items():
+        active = 0.0
+        end = None
+        for start, finish in sorted(intervals[operation]):
+            start = max(start, end) if end is not None else start
+            if finish > start:
+                active += (finish - start).total_seconds()
+            end = max(end, finish) if end is not None else finish
+        stage['active_request_wall_seconds'] = round(active, 3)
         stage['elapsed_span_seconds'] = round((datetime.fromisoformat(stage['last_finish'])
                                                - datetime.fromisoformat(stage['first_start'])).total_seconds(), 3)
         stage['request_seconds'] = round(stage['request_seconds'], 3)

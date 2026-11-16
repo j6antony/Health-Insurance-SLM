@@ -264,20 +264,36 @@ def scenario_canary(parent_config, config, *, recovery_id=None):
             data.close()
 
 
-def fresh_teacher_pool(pipeline, target, weights, old_ids, *, eligible=lambda pair: True):
+def fresh_teacher_pool(pipeline, target, weights, old_ids, *, eligible=lambda pair: True,
+                       required_unused=None, used_ids=()):
     """Build up to a fresh, usable pool while retaining interrupted work."""
     from self_instruct_pipeline.pipeline import GenerationExhausted
 
     pipeline.scheduler.weights = weights
+    required_unused = required_unused or {}
+    if pipeline.store.path('pending_generation_wave.json').exists():
+        pipeline.config['generation']['target_accepted_scenarios'] = len(pipeline.accepted)
+        pipeline.generate()
     for attempt in range(4):
         ids = {record['id'] for record in pipeline.accepted if record['id'] not in old_ids}
         pipeline.answer(allow_partial=True, scenario_ids=ids)
         pairs = [pair for pair in checked_pairs(pipeline) if pair[0]['id'] in ids and eligible(pair)]
-        if len(pairs) >= target or attempt == 3:
+        available = Counter(r['task'] for r, _ in pairs if r['id'] not in used_ids)
+        missing = {task: count - available[task] for task, count in required_unused.items()
+                   if count > available[task]}
+        targeted = sum(missing.values())
+        shortage = max(0, target - len(pairs))
+        if (not shortage and not targeted) or attempt == 3:
             return pairs
-        pipeline.config['generation']['target_accepted_scenarios'] = len(pipeline.accepted) + target - len(pairs)
+        task_targets = None
+        if targeted:
+            # First fill the measured task deficits. Unrestricted slots are
+            # filled only after checking how many of those cases are usable.
+            task_targets = Counter(r['task'] for r in pipeline.accepted)
+            task_targets.update(missing)
+        pipeline.config['generation']['target_accepted_scenarios'] = len(pipeline.accepted) + (targeted or shortage)
         try:
-            pipeline.generate()
+            pipeline.generate(task_targets=task_targets)
         except GenerationExhausted:
             if not {record['id'] for record in pipeline.accepted} - ids - set(old_ids):
                 return pairs

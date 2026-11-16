@@ -199,9 +199,8 @@ class Pipeline:
         self.store.append('rejected_records.jsonl', {'failure_type': failure_type, 'repairable': repairable, 'id': str(uuid.uuid4()), 'timestamp': now(),
                           'phase': phase, 'reason': reason, 'batch_id': batch_id, 'record': record})
 
-    def _audit_and_accept(self, records, plan, batch_id, *, recovered_from=None):
+    def _validate_generation(self, records, plan, batch_id, *, recovered_from=None):
         count = sum(plan['task_quotas'].values())
-        accepted_this_batch = []
         # Batch shape/quotas must be coherent, but invalid individual
         # scenarios are quarantined without losing their valid peers.
         if not isinstance(records, list) or not records or len(records) > 2 * count:
@@ -225,7 +224,10 @@ class Pipeline:
                 valid.append(row)
             except ValidationError as exc:
                 self.reject('scenario_validation', str(exc), row, batch_id)
-        records = valid
+        return valid
+
+    def _audit_and_accept(self, records, plan, batch_id, *, recovered_from=None):
+        records = self._validate_generation(records, plan, batch_id, recovered_from=recovered_from)
         if not records:
             return []
         neighbors = {r['generation_id']: self.dedup.neighbors(r) for r in records}
@@ -233,12 +235,21 @@ class Pipeline:
         audits = self.client().generate_json(audit_messages,
                                        scenario_audit_schema([r['generation_id'] for r in records]),
                                        'scenario_audit', temperature=0.0)
+        return self._accept_audits(records, plan, batch_id, neighbors, audit_messages, audits,
+                                   recovered_from=recovered_from)
+
+    def _accept_audits(self, records, plan, batch_id, neighbors, audit_messages, audits, *,
+                       recovered_from=None):
+        accepted_this_batch = []
+        already_committed = {r['generation_id'] for r in self.accepted if r.get('batch_id') == batch_id}
         if not isinstance(audits, list):
             raise ValidationError('Scenario audit must return an array')
         audit_ids = Counter(a.get('generation_id') for a in audits if isinstance(a, dict))
         by_id = {a.get('generation_id'): a for a in audits if isinstance(a, dict)}
         audit_schema = scenario_audit_schema([r['generation_id'] for r in records])['items']
         for index, row in enumerate(records):
+            if row['generation_id'] in already_committed:
+                continue
             audit = by_id.get(row['generation_id'])
             try:
                 if audit_ids[row['generation_id']] != 1:
@@ -309,6 +320,9 @@ class Pipeline:
         self.reject(phase, str(exc), metadata or None, batch_id)
 
     def generate(self, task_targets=None, *, one_batch=False):
+        if self.request_options and not one_batch:
+            from .generation_wave import generate_waves
+            return generate_waves(self, task_targets)
         target = self.config['generation']['target_accepted_scenarios']
         goal = digest({'target': target, 'task_targets': task_targets})
         limit_path = self.store.path('generation_limits.json')
@@ -413,6 +427,8 @@ class Pipeline:
         audits = []
         for row, (messages, schema) in zip(rows, requests):
             answer = parent.cached(messages, schema, 'teacher_answer')
+            if answer is None:
+                continue
             try:
                 validate_answer(row, answer, schema)
             except ValidationError:

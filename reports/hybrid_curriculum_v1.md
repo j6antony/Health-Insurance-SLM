@@ -55,3 +55,42 @@ with six tasks represented in each. A 32-job simulated latency test took
 0.838 seconds serially and 0.202 seconds with four workers. This measures local
 dispatch with simulated delay, without real provider rate limits, token costs,
 or GPU work. Real speed and benchmark gains require the Colab experiment.
+
+## Prelaunch review update
+
+Generation now plans up to four quota-limited batches together. The caller
+reserves the requested task counts across the group. Workers save provider
+receipts, while validation, overlap checks, prompt preparation and admission
+run in planned order. Exact duplicates and excluded cases are blocked before
+audit. Admission rechecks overlap after earlier batches are committed. Resume
+reuses completed generation and audit receipts, including when one sibling
+request fails. A provider response lost before its receipt is on disk may
+still need a new budgeted request.
+
+Refills reserve only the measured task deficits. A deficit-only refill has
+zero buffer. With one open adaptive slot, the refill may request one extra
+candidate, compared with eight extras in the first 80-slot window. A coverage
+shortfall still stops the round rather than admitting unsuitable examples.
+
+The new notebook writes to `colab_l4_hybrid_fresh_round1_v2`. Enable
+`RESEARCH_MACRO_CONTINUATION` in its configuration before the initial launch
+to record the highest-macro checkpoint as the input for any explicitly
+authorized later research round. The one-round notebook still stops at one
+round. Safety and significance gates continue to control the accepted best.
+The report records safety failures for ranked candidates and hybrid runs
+reject release evaluation.
+
+The no-cost controller test ran one mock round, reopened the saved run and
+explicitly extended it to a second mock round. Both rounds produced 200
+distinct pairs with the 60/60/80 composition and all 18 tasks. The 360-case
+development and 108-case holdout exclusions were verified against all 400
+training records. The higher-macro candidate was flagged for an unsupported
+claim and seeded only the opt-in research continuation. A separate interruption
+test reused all four generation replies and three completed audit replies.
+The controller mock recorded 305 simulated API requests across two rounds:
+40 generation, 40 scenario audit, 110 teacher answer (101 batched),
+100 answer audit (98 batched), and 15 student assessment requests. Mock
+evaluations exercised checkpoint policy without live semantic judge requests.
+The stage export distinguishes summed request durations, elapsed spans and
+the union of active request intervals, so concurrent time is counted once.
+Colab wall time, provider behavior and real score changes remain unmeasured.

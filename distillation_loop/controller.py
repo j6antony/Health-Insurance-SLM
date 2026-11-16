@@ -117,11 +117,26 @@ def run_loop(runtime, parent_config, config, *, round_limit=None, initial_adapte
             print('API usage:', export_usage(directory), flush=True)
 
 
+def round_checkpoint(state, research):
+    """Resolve the next experimental input independently of promotion."""
+    if research and state.get('experimental_macro_rank'):
+        row = state['experimental_macro_rank'][0]
+        return row['checkpoint'], row.get('adapter_sha256')
+    return state['best_checkpoint'], (state.get('best_report') or {}).get('adapter_sha256')
+
+
 def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, decision, evaluate_release):
     from .hybrid import options as hybrid_options
     hybrid = hybrid_options(config)
+    research = config.get('research_macro_continuation', False)
+    if type(research) is not bool or (research and not hybrid):
+        raise ValueError('Macro continuation requires an explicit research hybrid profile')
     if hybrid and (evaluate_release or not config['evaluation'].get('split_path')):
         raise ValueError('Hybrid experiments require frozen development and keep release scoring separate')
+    if hybrid:
+        from self_instruct_pipeline.budget import ACTIVE_BUDGET
+        if ACTIVE_BUDGET.get() is None:
+            raise ValueError('Hybrid experiments require an active cumulative API budget')
     store = Store(resolve_path(config['output_dir']))
     backup_target = backup_destination()
     if backup_target == 'kaggle':
@@ -389,20 +404,17 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
             return state
 
         print('Restoring student adapter (local).', flush=True)
-        # Legacy runs may have saved the latest candidate as last_checkpoint.
-        # The accepted best is the sole source of truth for a training resume.
-        if state.get('next_round_start_checkpoint', state['best_checkpoint']) != state['best_checkpoint']:
-            raise ValueError('Next-round checkpoint disagrees with the accepted best')
-        state.update(next_round_start_checkpoint=state['best_checkpoint'], last_checkpoint=state['best_checkpoint'])
-        runtime.restore(state['next_round_start_checkpoint'])
+        next_checkpoint, expected_adapter = round_checkpoint(state, research)
+        if state.get('next_round_start_checkpoint', next_checkpoint) != next_checkpoint:
+            raise ValueError('Next-round checkpoint disagrees with the configured continuation policy')
+        state.update(next_round_start_checkpoint=next_checkpoint, last_checkpoint=next_checkpoint)
+        runtime.restore(next_checkpoint)
         best_report = state['best_report'] or {}
-        if best_report.get('generation_key'):
-            best_adapter = best_report.get('adapter_sha256')
-            if not best_adapter:
-                raise ValueError('Saved accepted evaluation lacks verified adapter-weight identity')
-            if getattr(runtime, 'restored_adapter', None) != (
-                    str(Path(state['best_checkpoint']).resolve()), best_adapter):
-                raise ValueError('Accepted adapter differs from the evaluated checkpoint')
+        research_rank = research and state.get('experimental_macro_rank')
+        if research_rank or best_report.get('generation_key'):
+            if not expected_adapter or getattr(runtime, 'restored_adapter', None) != (
+                    str(Path(next_checkpoint).resolve()), expected_adapter):
+                raise ValueError('Continuation adapter differs from the evaluated checkpoint')
         if state['status'] != 'running':
             return finalize()
 
@@ -650,9 +662,12 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     rank = state.get('experimental_macro_rank', [])
                     if not rank:
                         rank = [{'checkpoint': state['initial_checkpoint'],
-                                 'macro': state['baseline_report']['macro_task_score']}]
+                                 'macro': state['baseline_report']['macro_task_score'],
+                                 'adapter_sha256': state['baseline_report'].get('adapter_sha256')}]
                     rank.append({'checkpoint': checkpoint, 'macro': report['macro_task_score'],
-                                 'operational_safety': hard, 'statistical_regression': statistical})
+                                 'adapter_sha256': report.get('adapter_sha256'),
+                                 'operational_safety': hard, 'statistical_regression': statistical,
+                                 'safety_failures': reasons, 'release_eligible': False})
                     state['experimental_macro_rank'] = sorted(rank, key=lambda row: -row['macro'])
                     atomic_json(directory / 'experiment_timing.json', {
                         'evaluation_seconds': monotonic() - evaluation_started,
@@ -662,7 +677,10 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                     state.update(best_report=report, best_checkpoint=checkpoint)
                     if passed(report):
                         state.update(provisional_best_checkpoint=checkpoint, provisional_best_report=report)
-                next_checkpoint = state['best_checkpoint']
+                next_checkpoint, _ = round_checkpoint(state, research)
+                if hybrid:
+                    selection['continuation_policy'] = 'research_macro' if research else 'safety_gated'
+                    selection['next_round_start_checkpoint'] = next_checkpoint
                 state.update({key: value for key, value in diagnostics.items() if key != 'preference_pairs'})
                 state.update(trained_scenario_ids=training_ids, completed_rounds=round_id,
                              last_checkpoint=next_checkpoint, next_round_start_checkpoint=next_checkpoint,
@@ -687,6 +705,11 @@ def _run_loop(runtime, parent_config, config, *, round_limit, initial_adapter, d
                 if state['status'] != 'running':
                     break
                 runtime.restore(state['next_round_start_checkpoint'])
+                if research:
+                    from_checkpoint, expected = round_checkpoint(state, research)
+                    if not expected or getattr(runtime, 'restored_adapter', None) != (
+                            str(Path(from_checkpoint).resolve()), expected):
+                        raise ValueError('Research adapter differs from the evaluated checkpoint')
         finally:
             data.close()
 

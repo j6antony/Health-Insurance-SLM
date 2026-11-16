@@ -4,7 +4,7 @@ from time import monotonic
 import json
 
 from self_instruct_pipeline.parallel import bounded_map
-from self_instruct_pipeline.persistence import atomic_json, digest, read_jsonl
+from self_instruct_pipeline.persistence import atomic_json, digest
 
 from .correction import assess_candidate, balanced_selection, curriculum_feedback
 from .data import fresh_teacher_pool
@@ -53,6 +53,8 @@ def hybrid_pairs(data, runtime, directory, state, config, weights, predict, hist
     def fits(pair):
         return not hasattr(runtime, 'training_pair_fits') or runtime.training_pair_fits(*pair, pipe.schemas)
 
+    # Also exclude prior-round matches before a raw case goes to an API audit.
+    pipe.exclusion_guard = lambda record: excluded(record) or previous_teacher.match(record)
     deterministic = fresh_template_pairs(settings['deterministic'], seed, pipe.schemas, excluded)
     if not all(map(fits, deterministic)):
         raise ValueError('A deterministic training target exceeds the training token budget')
@@ -69,8 +71,9 @@ def hybrid_pairs(data, runtime, directory, state, config, weights, predict, hist
                 and not fixed.match(pair[0]) and fits(pair))
 
     old = set(progress['older_ids'])
-    def fetch(target, sampling_weights):
-        return fresh_teacher_pool(pipe, target, sampling_weights, old, eligible=eligible)
+    def fetch(target, sampling_weights, *, required_unused=None, used_ids=()):
+        return fresh_teacher_pool(pipe, target, sampling_weights, old, eligible=eligible,
+                                  required_unused=required_unused, used_ids=used_ids)
 
     if not progress['general']:
         pool = fetch(settings['general'], dict.fromkeys(pipe.schemas, 1))
@@ -93,13 +96,14 @@ def hybrid_pairs(data, runtime, directory, state, config, weights, predict, hist
         else:
             selected = select_adaptive(results, settings['adaptive'], ready)
             screened = Counter(r['scenario']['task'] for r in results.values())
-            deficits = {t: max(0, floor - screened[t]) for t in pipe.schemas}
-            missing = max(settings['adaptive'] - len(selected), sum(deficits.values()))
-            if not missing:
+            combined = Counter(r['task'] for r, _ in ready + selected)
+            slots = settings['adaptive'] - len(selected)
+            deficits = refill_deficits(screened, combined, pipe.schemas, floor)
+            window = refill_window(slots, deficits, settings['buffer'])
+            if not window:
                 break
-            window = missing + settings['buffer']
-            refill_weights = {t: float(weights[t]) * (3 if deficits[t] else 1) for t in pipe.schemas}
-            pool = {r['id']: (r, a) for r, a in fetch(len(used) + window, refill_weights)}
+            pool = {r['id']: (r, a) for r, a in fetch(
+                len(used) + window, weights, required_unused=deficits, used_ids=used)}
             pending = [pair for key, pair in pool.items() if key not in used]
             reserved = []
             for pair in pending:
@@ -107,12 +111,13 @@ def hybrid_pairs(data, runtime, directory, state, config, weights, predict, hist
                 if deficits[task]:
                     reserved.append(pair)
                     deficits[task] -= 1
-            reserved = reserved[:window]
             reserved_ids = {r['id'] for r, _ in reserved}
             remainder = [pair for pair in pending if pair[0]['id'] not in reserved_ids]
             remainder.sort(key=lambda pair: (
-                -refill_weights[pair[0]['task']], {'hard': 0, 'medium': 1, 'easy': 2}[pair[0]['difficulty']]))
-            chosen = reserved + remainder[:window - len(reserved)]
+                -weights[pair[0]['task']], {'hard': 0, 'medium': 1, 'easy': 2}[pair[0]['difficulty']]))
+            # At most the measured deficits when only task coverage remains.
+            chosen = reserved + (remainder[:max(0, slots + min(settings['buffer'], (slots + 3) // 4)
+                                                  - len(reserved))] if slots else [])
             identifiers = [r['id'] for r, _ in chosen]
             if not identifiers:
                 break
@@ -149,6 +154,14 @@ def hybrid_pairs(data, runtime, directory, state, config, weights, predict, hist
                       'training_mix': {k: settings[k] for k in ('deterministic', 'general', 'adaptive')},
                       'screened_per_task': dict(screened),
                       'curriculum_feedback': curriculum_feedback(results.values())}
+
+
+def refill_deficits(screened, selected, tasks, floor):
+    return Counter({task: max(0, floor - screened[task], floor - selected[task]) for task in tasks})
+
+
+def refill_window(slots, deficits, buffer):
+    return max(sum(deficits.values()), slots + min(buffer, (slots + 3) // 4))
 
 
 def select_adaptive(results, count, initial):

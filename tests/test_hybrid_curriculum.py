@@ -46,7 +46,7 @@ class HybridCurriculumTests(unittest.TestCase):
                      'scenario': {'documents': [{'text': f'Independent case {i}'}]}}, {})
         pool = []
         calls = []
-        def fetch(pipe, target, weights, old, *, eligible):
+        def fetch(pipe, target, weights, old, *, eligible, **kwargs):
             calls.append(target)
             for i in range(len(pool), target):
                 pool.append(candidate(i))
