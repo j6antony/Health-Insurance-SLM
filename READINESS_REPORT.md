@@ -1,5 +1,7 @@
 # Autonomous learning readiness — November 19, 2026
 
+**Subsequent live-test update:** the original preparation report below is historical. Test A live rendering completed with its results saved under the SSD's `experiments/api-canary-20261119/analysis.md`. Test B continued-adapter GPU training, reload, inference, transfer and import have now passed on a single Colab NVIDIA L4; see [the measured GPU results](GPU_CANARY_TEST_B_RESULTS.md). The GPU runtime was released after verified result transfer. Neither test establishes downstream model-quality improvement or independent-evaluation readiness.
+
 The interrupted work is complete through all no-cost validation and paid-canary preparation. **No paid OpenAI generation, pretrained Qwen3-8B weight loading, or GPU training was performed.** The existing 24-family experiment was not regenerated. Its immutable exported examples were reused for tokenizer/evidence comparison and explicitly revalidated replay.
 
 Work remains on `feature/autonomous-agent-learning`, based on reviewed commit `f176d2752783a0c61bc32f9779d336d3ead8e90a`. No merge or change to `collab` is included. The completion message supplies the new pushed commit SHA; `git log -1 --oneline` identifies the commit containing this report.

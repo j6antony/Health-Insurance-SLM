@@ -1,6 +1,6 @@
 # Test B: continued-adapter GPU canary
 
-Local package and real-tokenizer preflight passed on November 19, 2026. **GPU training has not run.** No provider, GPU, hourly rate or paid budget has been approved. This Mac is Apple silicon without CUDA; no connected cloud GPU execution tool is available.
+**Completed on November 19, 2026:** the recovered adapter continued for exactly two optimizer steps on a Colab NVIDIA L4, saved/reloaded, generated a real inference response, and was imported to the SSD. Results were downloaded and hash-verified before the GPU runtime was disconnected and deleted. See [actual measured results](GPU_CANARY_TEST_B_RESULTS.md). The sections below preserve the original preparation and execution instructions; do not rerun this completed canary automatically.
 
 Open `notebooks/qwen3_8b_continued_gpu_canary.ipynb` in Colab (File → Upload notebook) or Kaggle (Import Notebook). Run its cells in order. Do not allocate paid hardware until the provider, actual GPU, hourly rate and budget are approved. On free resources, explicitly confirm the allocation has no usage charge. Colab hardware availability is not guaranteed: [official FAQ](https://research.google.com/colaboratory/faq.html).
 
@@ -122,4 +122,4 @@ That checkpoint does not exist until a real return is imported. The complete ret
 
 ## GPU report status
 
-Provider/hardware, CUDA/PyTorch runtime versions, actual VRAM, full-model loading, actual steps/losses, save/reload, inference response, runtime/cost and imported checkpoint are **not yet measured**. The notebook captures these for the final report. Current GPU spending is $0. The training infrastructure is not proven until the live run and import succeed. A successful two-step run proves infrastructure only, not model improvement.
+Measured results are in [GPU_CANARY_TEST_B_RESULTS.md](GPU_CANARY_TEST_B_RESULTS.md): two steps, finite step losses 0.1075 and 0.5408, 164.63 seconds worker runtime, 13.34 GiB peak PyTorch allocation, successful save/reload/inference/import, and approximately US$0.00866 worker credit valuation. The complete return is preserved on the SSD. Colab showed zero active sessions and zero compute units/hour after runtime deletion. This proves infrastructure for this exact canary, not model improvement.
