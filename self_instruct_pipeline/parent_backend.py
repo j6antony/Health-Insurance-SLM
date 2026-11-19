@@ -94,6 +94,8 @@ class JSONParent:
                 self._sleep(delay)
             except (urllib.error.URLError, TimeoutError, OSError):
                 log('network_error')
+                if not self.settings.get('retry_network_errors', True):
+                    raise ParentError(f'{self.NAME} ambiguous network failure during {operation}', True, category='ambiguous_transport') from None
                 if attempt == self.settings['max_retries']:
                     raise ParentError(f'{self.NAME} network failure during {operation}', True) from None
                 self._sleep(min(30, 2 ** attempt))

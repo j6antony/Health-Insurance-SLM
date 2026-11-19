@@ -2,6 +2,7 @@
 from . import CONTRACT_VERSION
 from .rendering import parse_text, verify, visible_package
 from .storage import digest
+from .evidence import select_evidence, EVIDENCE_POLICY
 
 TASKS = ('document_classification', 'field_extraction', 'missing_documents', 'evidence_quality',
          'conditional_requirements', 'cross_document_consistency', 'finding_explanation')
@@ -73,15 +74,25 @@ def project(s, rendered):
             review = any(p['readability'] != 'readable' for _, p in parsed)
         else:
             review = False
-        payload = {'instruction': INSTRUCTIONS[task], 'scenario': visible, 'response_schema': SCHEMAS[task]}
-        target = {'result': results[task], 'evidence': gate['evidence'],
-                  'source_references': ['inventory', 'claim_facts', 'fictional_rule_pack'], 'requires_review': review}
-        rows.append({'id': digest([s['variant_id'], task]), 'contract_version': CONTRACT_VERSION,
+        task_visible = visible
+        if task == 'missing_documents':
+            types = {doc: p['type'] for doc, p in parsed}
+            task_visible = {**visible, 'inventory': [{**item, 'document_type': types.get(item['document_id'], item['document_type'])}
+                                                    for item in visible['inventory']]}
+        payload = {'instruction': INSTRUCTIONS[task], 'scenario': task_visible, 'response_schema': SCHEMAS[task]}
+        evidence, references = select_evidence(task, task_visible, findings)
+        target = {'result': results[task], 'evidence': evidence,
+                  'source_references': references, 'requires_review': review}
+        rows.append({'id': digest([s['variant_id'], task, EVIDENCE_POLICY]), 'contract_version': CONTRACT_VERSION,
                      'family_id': s['family_id'], 'variant_id': s['variant_id'], 'task': task,
                      'payload': payload, 'target': target, 'scenario_hash': s['content_hash'],
                      'render_hash': rendered['render_hash'], 'verification': 'synthetic_silver',
                      'template_family': 'closed-grammar-v1', 'layout': s['layout'],
-                     'rule_ids': s['relevant_rule_ids']})
+                     'rule_ids': s['relevant_rule_ids'], 'evidence_policy': EVIDENCE_POLICY,
+                     'selection': {'category': s['category'], 'intervention': s.get('provenance', {}).get('intervention', 'master'),
+                                   'states': sorted({d['readability'] if d['present'] else 'missing' for d in s['documents']}),
+                                   'findings': sorted({f['status'] for f in findings}),
+                                   'control': 'valid' if not any(f['requires_review'] for f in findings) else 'issue_or_uncertain'}})
     return rows
 
 
@@ -89,6 +100,9 @@ def target_from_visible(row):
     """Independently reconstruct truth from student-visible text and inventory."""
     from .scenarios import seal
     visible = row['payload']['scenario']
+    from .rules import rule_pack
+    if visible['fictional_rule_pack'] != rule_pack():
+        raise ValueError('Deterministic reconstruction requires the exact fictional rule pack')
     by_id = {p['document_id']: parse_text(p['text']) for p in visible['documents']}
     documents = []
     for item in visible['inventory']:
@@ -105,6 +119,10 @@ def target_from_visible(row):
         raise ValueError('Inventory and final text disagree')
     s = seal({'synthetic': True, 'category': visible['claim_category'], 'facts': visible['claim_facts'],
               'rule_pack_version': visible['fictional_rule_pack']['version'], 'documents': documents,
-              'family_id': row['family_id'], 'variant_id': row['variant_id'], 'layout': row['layout']})
+              'family_id': row['family_id'], 'variant_id': row.get('variant_id', 'evaluation'), 'layout': row.get('layout', 0)})
     r = {'scenario_hash': s['content_hash'], 'pages': visible['documents'], 'render_hash': digest(visible['documents'])}
-    return next(example['target'] for example in project(s, r) if example['task'] == row['task'])
+    target = next(example['target'] for example in project(s, r) if example['task'] == row['task'])
+    # Preserve the evidence actually present in legacy/independent inputs; do
+    # not silently upgrade an untyped inventory when reconstructing its target.
+    spans, references = select_evidence(row['task'], visible, s['findings'])
+    return {**target, 'evidence': spans, 'source_references': references}

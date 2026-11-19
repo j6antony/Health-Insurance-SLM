@@ -60,3 +60,5 @@ publish completed rounds for the next fresh Kaggle session.
 ## Rule-grounded autonomous learning
 
 See [AUTONOMOUS_LEARNING.md](AUTONOMOUS_LEARNING.md) for the additive synthetic document-verification pipeline, SSD storage, no-cost dry run, manual GPU transfers, and its current validation limits.
+
+See [READINESS_REPORT.md](READINESS_REPORT.md) for the November 19 evidence-quality improvements, real tokenizer/collator checks, recovered 79.5% adapter identity, and prepared canaries.

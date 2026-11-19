@@ -23,22 +23,30 @@ def _run(directory, authorized=False, validate_only=False):
     started = time.monotonic()
     if validate_only:
         from transformers import AutoTokenizer
-        from distillation_loop.student import tokenize_teacher_pair
+        from .tokenizer_preflight import analyze
         tokenizer = AutoTokenizer.from_pretrained(job['model_name'], revision=job['model_revision'], token=False)
         rows = [json.loads(line) for line in (root / 'examples.jsonl').read_text().splitlines()]
-        samples = [tokenize_teacher_pair(tokenizer, r['payload'], r['target'], job['config']['training']['max_sequence_length']) for r in rows]
-        return {'status': 'tokenizer_validated_only', 'job_id': job['job_id'], 'examples': len(samples),
-                'total_tokens_one_pass': sum(len(s['input_ids']) for s in samples),
-                'completion_tokens_one_pass': sum(sum(s['completion_mask']) for s in samples),
-                'max_sequence_tokens': max(len(s['input_ids']) for s in samples)}
+        result = analyze(rows, tokenizer, job['config']['training']['max_sequence_length'])
+        if result['status'] != 'passed':
+            raise ValueError('Tokenizer preflight found overlength examples; no truncation is allowed')
+        return {**result, 'status': 'tokenizer_validated_only', 'job_id': job['job_id']}
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, set_seed
     from distillation_loop.evaluation import require_training_versions
-    from distillation_loop.student import StudentRuntime, tokenize_teacher_pair, train_tokenized
+    from distillation_loop.student import StudentRuntime, tokenize_teacher_pair, train_tokenized, require_single_gpu
     from distillation_loop.adapter_identity import adapter_files
     require_training_versions()
+    require_single_gpu(torch)
     set_seed(job['seed'])
     tokenizer = AutoTokenizer.from_pretrained(job['model_name'], revision=job['model_revision'], token=False)
+    rows = [json.loads(line) for line in (root / 'examples.jsonl').read_text().splitlines()]
+    from .dataset import validate_example
+    from .tokenizer_preflight import analyze
+    for row in rows:
+        validate_example(row)
+    preflight = analyze(rows, tokenizer, job['config']['training']['max_sequence_length'], check_cpu_config=False)
+    if preflight['status'] != 'passed':
+        raise ValueError('Training blocked by tokenizer preflight')
     model = AutoModelForCausalLM.from_pretrained(job['model_name'], revision=job['model_revision'], token=False,
         device_map={'': 0}, dtype=torch.float16, attn_implementation='sdpa',
         quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4',
@@ -64,6 +72,7 @@ def _run(directory, authorized=False, validate_only=False):
               'adapter_lineage': job['adapter_lineage'], 'adapter_reload_verified': True,
               'minimal_inference_verified': True, 'library_versions': versions, 'model_identity': runtime.identity(),
               'gpu_runtime_seconds': time.monotonic() - started, 'estimated_gpu_cost_usd': None,
+              'tokenizer_preflight': {k: v for k, v in preflight.items() if k != 'lengths'},
               'training_metrics': json.loads((output / 'training_metrics.json').read_text()),
               'synthetic_smoke_inference': 'Nonempty generation only; not an evaluation score'}
     return result

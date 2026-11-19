@@ -41,6 +41,8 @@ def main(argv=None):
     parser.add_argument('--count', type=int, default=24)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--operation', choices=OPERATIONS, default='remove_document')
+    parser.add_argument('--target-document-id')
+    parser.add_argument('--comparison-document-id')
     parser.add_argument('--authorize-api', action='store_true')
     parser.add_argument('--authorize-release-evaluation', action='store_true')
     args = parser.parse_args(argv)
@@ -108,9 +110,9 @@ def main(argv=None):
                             sources = [row['scenario'] for row in input_data['verified']]
                         verified, quarantine = [], []
                         for s in sources:
-                            if args.command == 'expand':
-                                s = expand(s, args.operation)
                             try:
+                                if args.command == 'expand':
+                                    s = expand(s, args.operation, args.target_document_id, args.comparison_document_id)
                                 r = render(s)
                                 gate = verify(s, r)
                             except ValueError as exc:

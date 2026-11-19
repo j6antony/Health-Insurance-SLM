@@ -47,6 +47,8 @@ def planner_input(report=None, statistics=None, quarantine=None, budget=None, pr
     # Accept aggregates only. No arbitrary case contents or sealed holdout report
     # are forwarded to a programmatic or interactive planner.
     report = report or {}
+    if report.get('grounded_score_available') is False:
+        report = {'case_count': report.get('case_count', 0)}
     return {'performance': {k: report[k] for k in ('per_task', 'macro_task_score', 'paired', 'failure_counts', 'case_count') if k in report},
             'dataset': statistics or {}, 'quarantine_counts': quarantine or {},
             'available_budget': budget or {'api_usd': 0, 'gpu_usd': 0}, 'prior_plan': previous}

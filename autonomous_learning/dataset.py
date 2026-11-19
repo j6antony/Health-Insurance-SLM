@@ -25,6 +25,8 @@ def validate_example(row):
     if payload['scenario']['synthetic'] is not True:
         raise ValueError('Unattended data must be synthetic')
     check_hidden_fields(payload['scenario'])
+    if row['task'] == 'document_classification' and any(item['present'] and item['document_type'] is not None for item in payload['scenario']['inventory']):
+        raise ValueError('Classification label leaked through typed inventory')
     validate_schema(row['target'], SCHEMAS[row['task']])
     pages = {(p['document_id'], p['page_number']): p['text'] for p in payload['scenario']['documents']}
     for e in row['target']['evidence']:
@@ -39,14 +41,20 @@ def validate_example(row):
     from .rendering import parse_text
     for text in pages.values():
         parse_text(text)
-    if not set(row['target']['source_references']) <= {'inventory', 'claim_facts', 'fictional_rule_pack'}:
-        raise ValueError('Invalid evidence source reference')
+    from .evidence import check_offsets
+    check_offsets(payload, row['target'])
 
 
 def content(row):
     """Normalize synthetic IDs for duplicate checks; never use hidden targets."""
     text = json.dumps(row['payload']['scenario']['documents'], sort_keys=True)
     return re.sub(r'SYN-[PC]-[a-f0-9]+', 'SYN-ID', text).casefold()
+
+
+def training_content(row):
+    visible = row['payload']['scenario']
+    value = json.dumps({k: visible[k] for k in ('documents', 'inventory', 'claim_facts', 'claim_category')}, sort_keys=True)
+    return re.sub(r'SYN-[PC]-[a-f0-9]+', 'SYN-ID', value).casefold()
 
 
 def reject_leakage(training, evaluation):
@@ -64,7 +72,7 @@ def reject_leakage(training, evaluation):
             raise ValueError('Training/evaluation near-duplicate leakage')
 
 
-def build(rows, family_cap=8, evaluation=(), replay=(), replay_fraction=.25, initialization_strategy='continued'):
+def build(rows, family_cap=8, evaluation=(), replay=(), replay_fraction=.25, initialization_strategy='continued', selection_seed=42):
     if initialization_strategy not in ('fresh', 'continued'):
         raise ValueError('Unsupported adapter initialization strategy')
     if type(family_cap) is not int or family_cap < 1 or not 0 <= replay_fraction < 1:
@@ -84,38 +92,62 @@ def build(rows, family_cap=8, evaluation=(), replay=(), replay_fraction=.25, ini
     def add(row, replay_row=False):
         try:
             validate_example(row)
-            key = (row['task'], content(row))
+            key = (row['task'], training_content(row))
+            outcome = re.sub(r'SYN-[PC]-[a-f0-9]+', 'SYN-ID', json.dumps(row['target']['result'], sort_keys=True))
+            near_bucket = (row['task'], outcome, row['target']['requires_review'])
             if row['id'] in seen_ids or key in seen_content:
                 raise ValueError('duplicate')
             if any(SequenceMatcher(None, key[1], old).quick_ratio() >= .995
                    and SequenceMatcher(None, key[1], old, autojunk=False).ratio() >= .995
-                   for old in near_content[row['task']]):
+                   for old in near_content[near_bucket]):
                 raise ValueError('near_duplicate')
             if counts[row['family_id']] >= family_cap:
                 raise ValueError('family_cap')
             counts[row['family_id']] += 1
             seen_ids.add(row['id'])
             seen_content.add(key)
-            near_content[row['task']].append(key[1])
+            near_content[near_bucket].append(key[1])
             accepted.append({**row, 'replay': replay_row})
         except (ValueError, KeyError, TypeError) as exc:
             rejected.append({'id': row.get('id'), 'reason': str(exc), 'row': row})
-    # Round robin across variant/task combinations so the family cap does not
-    # always keep the seven master tasks and starve every counterfactual.
+    # Greedy set coverage, with local task coverage and global deficit pressure.
+    # Tie breaking uses a stable seed and content identity, never list order.
     families = defaultdict(list)
     for row in rows:
         families[row['family_id']].append(row)
-    for family, pool in sorted(families.items()):
-        by_task = {t: [r for r in pool if r['task'] == t] for t in TASKS}
-        chosen, depth = [], 0
-        while any(by_task.values()):
-            for n, task in enumerate(TASKS):
-                candidates = by_task[task]
-                if candidates:
-                    chosen.append(candidates.pop((depth + n) % len(candidates)))
-            depth += 1
-        for row in chosen:
+    covered, task_counts = set(), Counter()
+
+    def features(row):
+        metadata = row.get('selection', {})
+        result = row['target']['result']
+        statuses = tuple(sorted({v['status'] for v in result if isinstance(v, dict) and 'status' in v}))
+        outcome = (statuses, row['target']['requires_review'], bool(result))
+        values = {('task', row['task']), ('task_outcome', row['task'], str(outcome)),
+                  ('variant', row['variant_id']), ('layout', str(row['layout']))}
+        for key in ('category', 'intervention', 'control'):
+            values.add((key, str(metadata.get(key, 'unspecified'))))
+        for key in ('states', 'findings'):
+            values.update((key, value) for value in metadata.get(key, []))
+        return values
+
+    for family in sorted(families, key=lambda f: digest([selection_seed, f])):
+        pool, local = list(families[family]), set()
+        while pool:
+            def priority(row):
+                f = features(row)
+                return (int(('task', row['task']) not in local) * 100,
+                        sum((8 if v[0] == 'task_outcome' else 3 if v[0] in ('variant', 'intervention', 'control') else 1)
+                            for v in f - local),
+                        len(f - covered), -task_counts[row['task']], digest([selection_seed, row['id']]))
+            row = max(pool, key=priority)
+            pool.remove(row)
+            before_count = len(accepted)
             add(row)
+            if len(accepted) != before_count:
+                f = features(row)
+                local.update(f)
+                covered.update(f)
+                task_counts[row['task']] += 1
     replay_target = (len({r['id'] for r in replay} - seen_ids) if initialization_strategy == 'fresh'
                      else round(len(accepted) * replay_fraction / (1 - replay_fraction)))
     pools = {t: sorted([r for r in replay if r['task'] == t], key=lambda r: r['id']) for t in TASKS}
@@ -124,7 +156,14 @@ def build(rows, family_cap=8, evaluation=(), replay=(), replay_fraction=.25, ini
         for task in TASKS:
             if pools[task] and len(accepted) - before < replay_target:
                 add(pools[task].pop(0), True)
-    stats = {'total_examples': len(accepted), 'unique_master_families': len(counts),
+    stats = {'candidates_generated': len(rows), 'selection_seed': selection_seed,
+             'distinct_variants_retained': len({r['variant_id'] for r in accepted}),
+             'distinct_findings_retained': sorted({v for r in accepted for v in r.get('selection', {}).get('findings', [])}),
+             'intervention_distribution': dict(Counter(r.get('selection', {}).get('intervention', 'legacy') for r in accepted)),
+             'control_distribution': dict(Counter(r.get('selection', {}).get('control', 'legacy') for r in accepted)),
+             'evidence_spans': sum(len(r['target']['evidence']) for r in accepted),
+             'token_totals': None, 'token_totals_status': 'requires real tokenizer preflight',
+             'total_examples': len(accepted), 'unique_master_families': len(counts),
              'task_distribution': dict(Counter(r['task'] for r in accepted)),
              'variants_per_family': {f: len({r['variant_id'] for r in accepted if r['family_id'] == f}) for f in counts},
              'rule_coverage': dict(Counter(rule for r in accepted for rule in r['rule_ids'])),
@@ -136,6 +175,8 @@ def build(rows, family_cap=8, evaluation=(), replay=(), replay_fraction=.25, ini
              'replay_pool_size': len(replay), 'replay_target': replay_target, 'replay_actual': len(accepted) - before,
              'replay_shortfall': replay_target - (len(accepted) - before),
              'quality': 'automatically verified synthetic silver; not expert verified'}
+    from .diversity import measure
+    stats['surface_diversity'] = measure([p for r in accepted for p in r['payload']['scenario']['documents']])
     return {'rows': accepted, 'quarantine': rejected, 'statistics': stats}
 
 
@@ -192,3 +233,23 @@ def reject_sealed_leakage(training, index):
             other = set(candidate['shingles'])
             if token['hash'] == candidate['hash'] or len(mine & other) / max(1, len(mine | other)) >= .98:
                 raise ValueError('Sealed evaluation content/near-duplicate leakage')
+
+
+
+def migrate_verified_replay(rows):
+    """Recompute legacy synthetic silver targets; never mutate the original export."""
+    from .evidence import EVIDENCE_POLICY
+    migrated = []
+    for row in rows:
+        if row.get('verification') != 'synthetic_silver' or row['payload']['scenario'].get('synthetic') is not True:
+            raise ValueError('Replay migration requires explicitly verified synthetic sources')
+        target = target_from_visible(row)
+        new = {**row, 'target': target, 'evidence_policy': EVIDENCE_POLICY,
+               'id': digest([row['id'], EVIDENCE_POLICY]),
+               'migration': {'source_example_id': row['id'], 'source_sha256': digest(row),
+                             'method': 'final-text deterministic target reconstruction'},
+               'selection': {**row.get('selection', {}), 'category': row['payload']['scenario']['claim_category'],
+                             'intervention': 'revalidated_replay'}}
+        validate_example(new)
+        migrated.append(new)
+    return migrated

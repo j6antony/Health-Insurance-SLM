@@ -1,0 +1,36 @@
+{
+  "status": "benchmark_identity_and_weight_hashes_verified_not_live_loaded",
+  "benchmark_adapter_sha256": "e8e5edc7a75f82507db3c3fe0afca721728cd5f8abe03a80fa997139970fbc0e",
+  "benchmark_score": 79.5,
+  "score_contract": "Half credit on 144 directly Codex-reviewed legacy 18-task cases; not human expert gold or a new seven-task score",
+  "benchmark_report": "https://drive.google.com/file/d/1d4Bu9TnPyki1wsU9dcN2eGBNhNx_Lhd6/view",
+  "source_folder": "https://drive.google.com/drive/folders/1_JyOyaLQhCMpVyu8JbtWrFw71IxtF1Za",
+  "transfer_folder": "https://drive.google.com/drive/folders/1oY8HjnOtBx3vgX8boJ56ylYu6wJ-hjVs",
+  "adapter_files": {
+    "adapter_config.json": "1fe1fdbfa6b611c63f9d7dc84d431f2b3685338d91678510f579b24ae002d5df",
+    "adapter_model.safetensors": "154c508775106e8ffe15e224c9f256131852d384e4efaea6af2bdf3d35e99c6f"
+  },
+  "model_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+  "configuration": {
+    "r": 32,
+    "lora_alpha": 32,
+    "lora_dropout": 0.0,
+    "use_rslora": true,
+    "peft_type": "LORA",
+    "task_type": "CAUSAL_LM",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "local_adapter_artifact": "checkpoints/candidates/e8e5edc7-drive-transfer/adapter",
+  "limitations": [
+    "CUDA weight loading remains untested",
+    "Review sample was reused and not blinded; it is not an independent release holdout"
+  ]
+}

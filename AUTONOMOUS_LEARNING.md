@@ -51,7 +51,7 @@ The `autonomous_learning` package contains:
 | `storage.py` | Volume/free-space checks, root containment, writer lock, atomic writes/copies, fsync, checksums |
 | `rules.py` | Versioned fictional checklists for hospitalization, outpatient, diagnostic and pharmacy claims |
 | `scenarios.py` | Seeded feasible-state generation, pairwise coverage, stable families and counterfactual lineage |
-| `rendering.py` | Three text layouts, field aliases/date formats, final-text parsing and exact evidence offsets |
+| `rendering.py` | Nine controlled layouts, aliases/tables/label OCR and date formats, final-text parsing and exact evidence offsets |
 | `tasks.py` | Seven new task schemas and strictly separated student payloads and targets |
 | `dataset.py` | Independent target reconstruction, scope/schema/evidence checks, deduplication, family caps, replay, leakage exclusion, exports |
 | `teacher.py` | Selective existing OpenAI integration, persistent queue/cache, budget capture, bounded threads, quarantine, offline Batch exchange |
@@ -105,7 +105,7 @@ Batch export/import verifies queued IDs and final facts, but **does not submit, 
 
 ## GPU handoff
 
-Preparation requires no CUDA, API key or model download. A package contains exact dataset files/hashes, source hashes, the pinned training requirements, model name/revision, LoRA configuration, seed, output location, adapter lineage and a job ID. Continued adapters must match base model and LoRA rank; restore performs full weight compatibility checks. Fresh training initializes one adapter on the base; it does not stack LoRAs.
+Preparation requires no CUDA, API key or model download. A package contains exact dataset files/hashes, source hashes, the pinned training requirements, model name/revision, LoRA configuration, seed, output location, adapter lineage and a job ID. Continued adapters must match base model, rank, alpha, dropout, target modules and LoRA scaling variant; restore also checks weight compatibility. The recovered 79.5% legacy adapter requires rank-32 RSLoRA with zero dropout. Fresh training initializes one adapter on the base; it does not stack LoRAs.
 
 After explicit authorization for training:
 
@@ -134,7 +134,7 @@ python3 -m autonomous_learning resume --run-id experiment-001 --config "$RUN_CON
 
 Imports bind job, dataset, adapter hashes, remote reload/inference verification, versions and bounded GPU cost. They do not execute remote files. Remote statements are trusted worker attestations, not cryptographically signed third-party proof. Re-import is idempotent. Unexpected or changed results are rejected and never replace a best adapter.
 
-The worker reuses `StudentRuntime`, non-thinking Qwen prompts, `tokenize_teacher_pair`, completion-only loss and `train_tokenized`/SFTTrainer. It restores the produced adapter from disk and performs a nonempty inference check before emitting `result.json`. This smoke check is not a quality score. Current model revision `main` is resolved/recorded at load time; pin an immutable revision before a publishable controlled experiment. GPU execution and new-contract tokenizer lengths have not been live-tested here.
+The worker reuses `StudentRuntime`, non-thinking Qwen prompts, `tokenize_teacher_pair`, completion-only loss and `train_tokenized`/SFTTrainer. It restores the produced adapter from disk and performs a nonempty inference check before emitting `result.json`. This smoke check is not a quality score. The model and tokenizer are pinned to immutable revision `b968826d9c46dd6066d109eabc6255188de91218`. Real Qwen tokenizer, completion masks, native TRL collator and CPU SFT configuration have been checked; CUDA Qwen execution remains untested. See READINESS_REPORT.md for the measured distributions.
 
 ## Evaluation and promotion
 
@@ -165,3 +165,52 @@ python3 -m autonomous_learning compare --input "$COMPARISON_SPEC_JSON"
 A comparison spec has `mode` (`equal_training_budget` or `equal_api_cost`) and `arms` with A/direct_teacher and B/scenario_reuse. Required fields and exact matching checks are in `experiments.py`. Equal-training mode requires matched accepted count and measured token exposure; both modes require matching starting adapter, training configuration and benchmark. Equal-cost mode requires equal API ceilings. The validator records measured generation time, cost and family diversity supplied by each arm; it does not claim savings or execute the arms.
 
 **Automated execution of the legacy teacher arm, fair token-matching/subsampling, planner A/B runs and adapter-strategy experiments remain deferred.** Existing direct self-instruct generation has 18 legacy tasks and cannot be silently treated as these seven new task contracts. A reviewed common-task adapter is required for a valid head-to-head experiment.
+
+
+## November 19 quality pilot and canary commands
+
+Current evidence policy is `minimal-task-evidence-v3`. Classification cites headings,
+extraction cites field/value statements, consistency cites required dates, and
+inventory-established absence can have no document quote. Scoped source paths are
+validated. The final-text parser reconstructs targets independently. Evaluation
+separates offset validity from relevance, sufficiency, finding accuracy and review
+calibration; unfamiliar prose needs reviewed reference anchors or grounding remains
+unavailable. Exact canonical evidence anchors are conservative about alternate proofs.
+
+Selection uses seeded task/outcome/intervention/state/category/layout coverage under
+the family cap. No-op and infeasible interventions are rejected, and the expansion
+controller searches for meaningful alternatives. Use explicit targets when needed:
+
+```bash
+python3 -m autonomous_learning expand --input "$MASTER_JSON" --operation introduce_date_mismatch --target-document-id DOC-3 --comparison-document-id DOC-1
+python3 -m autonomous_learning dry-run --config config/autonomous_learning.pilot.json --run-id "$NEW_UNIQUE_RUN_ID"
+python3 -m autonomous_learning.tokenizer_preflight --examples "$EXAMPLES_JSONL" --tokenizer "$PINNED_TOKENIZER_CACHE" --output "$TOKEN_REPORT_JSON"
+python3 -m autonomous_learning.canary prepare-api
+python3 -m autonomous_learning.canary prepare-gpu --manifest "$DATASET_MANIFEST" --adapter "$VERIFIED_ADAPTER_DIRECTORY" --replay-examples "$LEGACY_VERIFIED_EXAMPLES"
+python3 -m autonomous_learning.evaluation_preparation --output "$INDEPENDENT_REVIEW_KIT"
+```
+
+All commands above are no-cost preparation, apart from ordinary public tokenizer
+network access if not cached. They do not execute paid API generation or GPU jobs.
+Legacy replay is explicitly reconstructed under the new evidence policy into new
+versioned artifacts; original exports are retained. Strategy A preserves rank-32
+RSLoRA and adds stratified replay; Strategy B uses a fresh standard adapter on the
+cumulative verified corpus. These are candidate strategies, not a fair scored A/B
+result. Both prepared GPU canaries have two optimizer steps and a proposed $1 worker
+limit, still requiring provider/hardware/rate/budget approval.
+
+After a separate explicit authorization, the prepared API canary can be invoked
+with `python3 -m autonomous_learning.canary run-api --authorize-api`. It is bounded
+to three unique requests, at most six attempts, concurrency one and $0.02 total.
+Ambiguous network failures remain uncertain without automatic retry. Cached keys
+prevent resending completed requests. Useful surface diversity requires novelty
+beyond the nine Python styles; it does not imply student improvement. Rich arbitrary
+clinical prose is still quarantined. No paid canary has run in this implementation task.
+
+The native CPU environment and cached tokenizer are under the authorized SSD's
+`tools/cpu-preflight-venv` and `tokenizers/Qwen3-8B-b968826d` directories. Invoke its
+`bin/python` directly. macOS AppleDouble metadata must not be imported as source;
+metadata sidecars in that task-owned environment were removed after relocation.
+Legacy tests use POSIX temporary storage; the actual pilot and runtime outputs use
+the SSD. API and GPU artifacts, hashes, evidence/token measurements and remaining
+approval dependencies are listed in READINESS_REPORT.md.

@@ -11,7 +11,7 @@ import zipfile
 from autonomous_learning import CONTRACT_VERSION
 from autonomous_learning.storage import Storage, StorageError, atomic_write, checksum, digest, read_json
 from autonomous_learning.rules import evaluate, VERSION, CATEGORIES, STATUSES
-from autonomous_learning.scenarios import make_scenario, generate, expand, verify_scenario, OPERATIONS, seal
+from autonomous_learning.scenarios import make_scenario, generate, expand, verify_scenario, OPERATIONS, seal, meaningful_variants
 from autonomous_learning.rendering import render, verify, parse_text
 from autonomous_learning.tasks import TASKS, project
 from autonomous_learning.dataset import build, export, validate_example, reject_leakage
@@ -88,14 +88,17 @@ class RuleTests(unittest.TestCase):
             verify_scenario(s)
 
     def test_every_counterfactual_recomputes_and_preserves_lineage(self):
-        master = scenario('missing', condition=True)
         for operation in OPERATIONS:
+            case = {'restore_document': 'missing', 'repair_readability': 'unreadable', 'fix_dates': 'date_conflict',
+                    'make_valid': 'unknown_signature'}.get(operation, 'valid')
+            master = scenario(case, condition=False)
             variant = expand(master, operation)
             self.assertEqual(variant['family_id'], master['family_id'])
             self.assertEqual(variant['parent_variant_id'], master['variant_id'])
             self.assertNotEqual(variant['variant_id'], master['variant_id'])
             self.assertEqual(variant['findings'], evaluate(variant))
             verify(variant, render(variant))
+        master = scenario('missing', condition=True)
         repaired = expand(master, 'make_valid')
         self.assertNotIn('issue_detected', [f['status'] for f in repaired['findings']])
         self.assertNotEqual(master['findings'], repaired['findings'])
@@ -151,8 +154,7 @@ class FaithfulnessTests(unittest.TestCase):
     def test_family_cap_duplicates_and_replay(self):
         s = scenario()
         rows = project(s, render(s))
-        for op in OPERATIONS[:3]:
-            v = expand(s, op)
+        for v in meaningful_variants(s, 3):
             rows += project(v, render(v))
         dataset = build(rows + rows[:2])
         self.assertEqual(len(dataset['rows']), 8)

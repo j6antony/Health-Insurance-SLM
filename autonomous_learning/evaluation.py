@@ -13,7 +13,7 @@ from .dataset import validate_example, reject_leakage
 from .storage import digest, read_json
 from .tasks import TASKS, SCHEMAS
 
-SCORING = 'document-verification-exact-v1'
+SCORING = 'document-verification-grounded-v3'
 TIERS = ('development', 'probes', 'release_holdout')
 
 
@@ -52,19 +52,15 @@ def import_benchmark(storage, benchmark, training=()):
 
 
 def validate_evidence(payload, answer):
-    docs = {(p['document_id'], p['page_number']): p['text'] for p in payload['scenario']['documents']}
-    if not answer['evidence'] or not answer['source_references']:
-        raise ValueError('Evidence grounding requires explicit source references and spans')
-    for e in answer['evidence']:
-        if not e['quote'] or docs.get((e['document_id'], e['page_number']), '')[e['start']:e['end']] != e['quote']:
-            raise ValueError('Prediction evidence does not match source offsets')
-    if not set(answer['source_references']) <= {'inventory', 'claim_facts', 'fictional_rule_pack'}:
-        raise ValueError('Prediction refers to unavailable source')
+    from .evidence import check_offsets
+    check_offsets(payload, answer)
 
 
-def score_case(case, prediction):
+def score_case(case, prediction, reference_reviewed=False):
+    from .evidence import assess_evidence
     answer = None
-    schema_valid = evidence_valid = False
+    schema_valid = offsets_valid = False
+    grounding = {'available': False, 'relevant': False, 'sufficient': False, 'basis': 'malformed_or_incomplete'}
     incomplete = bool(prediction.get('truncated') or prediction.get('error'))
     try:
         if incomplete:
@@ -73,25 +69,29 @@ def score_case(case, prediction):
         validate_schema(answer, SCHEMAS[case['task']])
         schema_valid = True
         validate_evidence(case['payload'], answer)
-        evidence_valid = True
-    except (ValueError, KeyError, TypeError):
+        offsets_valid = True
+        grounding = assess_evidence(case, answer, reference_reviewed)
+    except (ValueError, KeyError, TypeError, IndexError):
         pass
+    evidence_valid = offsets_valid and grounding['available'] and grounding['relevant'] and grounding['sufficient']
     valid = schema_valid and evidence_valid
     reference = case['target']
-    # Exact structured results are conservative. Additional accepted paraphrases
-    # require reviewed references; free text is not graded by fuzzy similarity.
-    score = float(valid and answer['result'] == reference['result']
-                  and answer['requires_review'] == reference['requires_review'])
-    missed = bool(valid and reference['requires_review'] and not answer['requires_review'])
-    unsupported = bool(valid and answer['result'] != reference['result']
-                       and case['task'] in ('field_extraction', 'finding_explanation'))
+    correct = bool(schema_valid and answer['result'] == reference['result'])
+    review_correct = bool(schema_valid and answer['requires_review'] == reference['requires_review'])
+    score = float(valid and correct and review_correct)
+    missed = bool(schema_valid and reference['requires_review'] and not answer['requires_review'])
+    unsupported = bool(schema_valid and not correct)
     result = {'task': case['task'], 'score': score, 'valid': valid, 'incomplete': incomplete,
               'unsupported_claims': unsupported, 'missed_required_review': missed,
-              'schema_valid': schema_valid, 'evidence_valid': evidence_valid,
-              'uncertainty_correct': bool(valid and answer['requires_review'] == reference['requires_review'])}
+              'schema_valid': schema_valid, 'evidence_offsets_valid': offsets_valid,
+              'evidence_relevant': grounding['relevant'], 'evidence_sufficient': grounding['sufficient'],
+              'semantic_grounding_available': grounding['available'], 'grounding_basis': grounding['basis'],
+              'finding_correct': correct, 'review_flag_correct': review_correct,
+              'evidence_valid': evidence_valid, 'uncertainty_correct': review_correct}
     if case['task'] == 'missing_documents':
         required = set(reference['result'])
-        result['missing_document_recall'] = len(required & set(answer['result'])) / len(required) if valid and required else (1.0 if valid else 0.0)
+        result['missing_document_recall'] = (len(required & set(answer['result'])) / len(required)
+                                           if valid and required else 1.0 if valid else 0.0)
     return result
 
 
@@ -109,7 +109,7 @@ def evaluate(benchmark, generations, checkpoint, *, holdout_state=None, release_
     by_id = generations['predictions']
     if set(by_id) != {r['id'] for r in cases}:
         raise ValueError('Predictions must cover identical complete evaluation cases')
-    scores = {r['id']: score_case(r, by_id[r['id']]) for r in cases}
+    scores = {r['id']: score_case(r, by_id[r['id']], benchmark['independently_reviewed']) for r in cases}
     grouped = defaultdict(list)
     for row in scores.values():
         grouped[row['task']].append(row['score'])
@@ -121,6 +121,9 @@ def evaluate(benchmark, generations, checkpoint, *, holdout_state=None, release_
               'macro_task_score': mean(per_task.values()), 'minimum_task_score': min(per_task.values()),
               'examples_per_task': dict(Counter(r['task'] for r in cases)), 'case_count': len(cases),
               'case_families': {r['id']: r['family_id'] for r in cases}, 'case_scores': scores,
+              'semantic_grounding_available_rate': mean(r['semantic_grounding_available'] for r in scores.values()),
+              'evidence_relevant_rate': mean(r['evidence_relevant'] for r in scores.values()),
+              'evidence_sufficient_rate': mean(r['evidence_sufficient'] for r in scores.values()),
               'schema_valid_rate': mean(r['schema_valid'] for r in scores.values()),
               'evidence_valid_rate': mean(r['evidence_valid'] for r in scores.values()),
               'schema_evidence_valid_rate': mean(r['valid'] for r in scores.values()),
@@ -131,6 +134,14 @@ def evaluate(benchmark, generations, checkpoint, *, holdout_state=None, release_
               'in_generator_accuracy': mean(per_task.values()) if benchmark['process'] == 'in_generator' else None,
               'out_of_generator_transfer_accuracy': mean(per_task.values()) if benchmark['process'] == 'independent' else None,
               'release_ready': False}
+    from .evidence import assess_evidence
+    available = all(assess_evidence(case, case['target'], benchmark['independently_reviewed'])['available'] for case in cases)
+    report['grounded_score_available'] = available
+    if not available:
+        report.update(macro_task_score=None, minimum_task_score=None,
+                      per_task={task: None for task in per_task}, inconsistency_detection=None,
+                      in_generator_accuracy=None, out_of_generator_transfer_accuracy=None,
+                      grounding_status='unavailable: independent semantic references require review')
     report['report_hash'] = digest(report)
     return report
 
@@ -158,6 +169,8 @@ def compare(baseline, candidate):
     for key in ('benchmark_hash', 'contract_version', 'model_name', 'evaluation_protocol', 'case_families'):
         if baseline[key] != candidate[key]:
             raise ValueError('Incompatible paired evaluation: ' + key)
+    if not all(r.get('grounded_score_available', True) for r in (baseline, candidate)):
+        return {'accepted': False, 'reason': 'Semantic grounding evaluation unavailable', 'release_ready': False}
     if set(baseline['per_task']) != set(TASKS) or any(n < 2 for n in candidate['examples_per_task'].values()):
         return {'accepted': False, 'reason': 'Require all tasks and at least two cases per task', 'release_ready': False}
     keys = sorted(baseline['case_scores'])

@@ -1,0 +1,162 @@
+{
+  "branch": "feature/autonomous-agent-learning",
+  "base_commit": "f176d2752783a0c61bc32f9779d336d3ead8e90a",
+  "tests": {
+    "run": 259,
+    "passed": 259,
+    "skipped": 0
+  },
+  "pilot": {
+    "artifact_root": "/Volumes/Extreme SSD/Codex Distillation Loop/experiments/quality-pilot-20261119-release/artifacts",
+    "run_id": "quality-final",
+    "masters": 8,
+    "verified_versions": 31,
+    "projected_examples": 217,
+    "manifest_path": "/Volumes/Extreme SSD/Codex Distillation Loop/experiments/quality-pilot-20261119-release/artifacts/datasets/approved_sft/867727cbace8c74aa588baec403c09d0477831e66e3e12414be7131085314313/manifest.json",
+    "faithfulness_failures": 0,
+    "runtime_seconds": 0.7337314180040266,
+    "resume_reexecuted_stages": 0,
+    "api_calls": 0,
+    "gpu_training": false,
+    "all_jsonl_targets_verified": true
+  },
+  "statistics": {
+    "candidates_generated": 217,
+    "control_distribution": {
+      "issue_or_uncertain": 49,
+      "valid": 15
+    },
+    "distinct_findings_retained": [
+      "issue_detected",
+      "not_applicable",
+      "not_evaluated",
+      "passed",
+      "requires_review"
+    ],
+    "distinct_variants_retained": 31,
+    "duplicate_rate": 0.08294930875576037,
+    "evidence_spans": 236,
+    "intervention_distribution": {
+      "make_unreadable": 7,
+      "make_valid": 14,
+      "master": 16,
+      "remove_document": 8,
+      "remove_field": 6,
+      "remove_signature": 4,
+      "repair_readability": 3,
+      "restore_document": 2,
+      "satisfy_condition": 4
+    },
+    "layouts": {
+      "1": 16,
+      "3": 16,
+      "5": 8,
+      "6": 8,
+      "7": 16
+    },
+    "quality": "automatically verified synthetic silver; not expert verified",
+    "rejected": 153,
+    "rejection_reasons": {
+      "family_cap": 135,
+      "near_duplicate": 18
+    },
+    "replay_actual": 0,
+    "replay_policy": "cumulative",
+    "replay_pool_size": 0,
+    "replay_shortfall": 0,
+    "replay_target": 0,
+    "rule_coverage": {
+      "complete.claim_form": 64,
+      "complete.discharge_summary": 16,
+      "complete.hospital_bill": 16,
+      "complete.investigation_report": 24,
+      "complete.invoice": 8,
+      "complete.pharmacy_invoice": 16,
+      "complete.prescription": 16,
+      "complete.referral": 64,
+      "consistency.service_dates": 64,
+      "required.claim_form": 64,
+      "required.discharge_summary": 16,
+      "required.hospital_bill": 16,
+      "required.investigation_report": 24,
+      "required.invoice": 8,
+      "required.pharmacy_invoice": 16,
+      "required.prescription": 16,
+      "required.referral": 64
+    },
+    "selection_seed": 191120,
+    "surface_diversity": {
+      "basis": "Accepted final text after replacing identifiers and numbers; no model diversity score inferred.",
+      "distinct_surface_forms_by_type": {
+        "claim_form": 5,
+        "discharge_summary": 6,
+        "hospital_bill": 2,
+        "investigation_report": 6,
+        "invoice": 1,
+        "pharmacy_invoice": 2,
+        "prescription": 5,
+        "referral": 3
+      },
+      "unique_document_texts_by_type": {
+        "claim_form": 8,
+        "discharge_summary": 7,
+        "hospital_bill": 2,
+        "investigation_report": 7,
+        "invoice": 1,
+        "pharmacy_invoice": 2,
+        "prescription": 5,
+        "referral": 3
+      }
+    },
+    "task_distribution": {
+      "conditional_requirements": 9,
+      "cross_document_consistency": 9,
+      "document_classification": 8,
+      "evidence_quality": 9,
+      "field_extraction": 9,
+      "finding_explanation": 11,
+      "missing_documents": 9
+    },
+    "token_totals": null,
+    "token_totals_status": "requires real tokenizer preflight",
+    "total_examples": 64,
+    "unique_master_families": 8,
+    "variants_per_family": {
+      "F-3454ad2fe210f3c34f63": 4,
+      "F-401e55999525bb29910c": 4,
+      "F-45fb24ae85b49dd6f1c4": 4,
+      "F-8c2c06cceccd629e8a1f": 4,
+      "F-900965ab1feb61b4ec8e": 3,
+      "F-a95dcecc59af3eea5de5": 4,
+      "F-c700a8c8e30aee17b26c": 4,
+      "F-edd4b76df383451ca5c3": 4
+    },
+    "verification_rejection_rate": 0.0
+  },
+  "paired_evidence": {
+    "spans_before": 2994,
+    "spans_after": 792,
+    "completion_tokens_before": 161923,
+    "completion_tokens_after": 60306
+  },
+  "canaries": {
+    "api": {
+      "requests": 3,
+      "hard_cap_usd": 0.02,
+      "status": "prepared_not_authorized"
+    },
+    "gpu": {
+      "steps": 2,
+      "proposed_limit_usd": 1,
+      "status": "prepared_not_authorized"
+    }
+  },
+  "api_calls": 0,
+  "gpu_training": false,
+  "independent_transfer_scoring": "unavailable",
+  "token_receipts": {
+    "pilot": "/Volumes/Extreme SSD/Codex Distillation Loop/manifests/tokenization/867727cbace8c74aa588baec403c09d0477831e66e3e12414be7131085314313-b968826d.json",
+    "fresh": "/Volumes/Extreme SSD/Codex Distillation Loop/manifests/tokenization/688374dc44bd45b04393a40218f1ded7ed1e7400604cf430840d9d3ed73879bd-b968826d.json",
+    "continued": "/Volumes/Extreme SSD/Codex Distillation Loop/manifests/tokenization/51cb0864daa7680acd3afd5d68d31276bac2289cc24bf7921cbc850e81252810-b968826d.json"
+  }
+}

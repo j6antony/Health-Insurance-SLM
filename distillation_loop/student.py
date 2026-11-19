@@ -110,7 +110,7 @@ class StudentRuntime:
             cfg = self.config['training']
             self.model = get_peft_model(self.model, LoraConfig(
                 r=cfg['lora_rank'], lora_alpha=cfg['lora_alpha'], lora_dropout=cfg['lora_dropout'],
-                task_type='CAUSAL_LM', bias='none',
+                task_type='CAUSAL_LM', bias='none', use_rslora=cfg.get('use_rslora', False),
                 target_modules=['q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj']))
         if not any(p.requires_grad for p in self.model.parameters()):
             raise ValueError('No trainable adapter parameters')

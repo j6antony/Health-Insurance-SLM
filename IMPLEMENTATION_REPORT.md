@@ -1,5 +1,7 @@
 # Implementation report — November 18, 2026
 
+Historical report. Corrections below were verified against the preserved SSD records on November 19; current readiness is documented in READINESS_REPORT.md.
+
 Implemented an additive, locally verified rule-grounded research pipeline. The offline generation-to-export path operates on the external SSD. Paid rendering and CUDA training were not executed. Independent evaluation results and deployment readiness are unavailable.
 
 ## Repository and changes
@@ -71,7 +73,7 @@ This package deliberately has a **zero GPU spending limit**. It is a real, verif
 
 ## Concrete synthetic example
 
-Master family `F-c0f18267f396e5c1bc42` uses category `hospitalization`, fictional synthetic patient and claim IDs, and a valid claim form/hospital bill/discharge summary package. The fictional referral requirement is not applicable. Presence and completeness findings pass and service dates agree.
+Master family `F-c0f18267f396e5c1bc42` uses category `hospitalization`, fictional synthetic patient and claim IDs, and a valid claim form/hospital bill/discharge summary package. The saved claim facts have `referral_required: true`, and the referral is present. Applicable presence and completeness findings pass and service dates agree. The original report incorrectly called this requirement not applicable; the underlying verified scenario was correct.
 
 Applying `remove_document` removes the `referral` evidence from both structured inventory and rendered text, preserves the family, assigns variant `V-e0b09e2bfdac86a6c278`, recomputes the corresponding rule to `issue_detected`, and reruns verification. Missing-document targets identify the absent document; readability targets never substitute “missing” for an unreadable document. Every emitted span is checked against final text offsets before export.
 
