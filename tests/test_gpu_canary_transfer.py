@@ -136,6 +136,61 @@ class CanaryTransferTests(unittest.TestCase):
                 self.assertTrue(observed['inference']['prediction']['raw'])
                 if mode == 'free': self.assertEqual(result['estimated_gpu_cost_usd'], 0)
 
+    def test_python_313_linux_notebook_host_passes_without_relaxing_architecture(self):
+        import ast, platform, sys
+        n = json.loads((ROOT / 'notebooks/qwen3_8b_continued_gpu_canary.ipynb').read_text())
+        setup = next(c['source'] for c in n['cells'] if c['cell_type'] == 'code' and 'Notebook host:' in c['source'])
+        nodes = []
+        for node in ast.parse(setup).body:
+            nodes.append(node)
+            if isinstance(node, ast.If): break
+        guard = compile(ast.Module(body=nodes, type_ignores=[]), '<notebook-host-guard>', 'exec')
+        with mock.patch.object(sys, 'version_info', (3, 13, 16)), \
+             mock.patch.object(platform, 'system', return_value='Linux'), \
+             mock.patch.object(platform, 'python_version', return_value='3.13.16'), \
+             mock.patch('builtins.print'):
+            with mock.patch.object(platform, 'machine', return_value='x86_64'):
+                exec(guard, {})
+            with mock.patch.object(platform, 'machine', return_value='aarch64'):
+                with self.assertRaisesRegex(RuntimeError, 'aarch64'):
+                    exec(guard, {})
+
+    def test_newer_kernel_provisions_compatible_training_python(self):
+        import ast, os, shutil, subprocess, sys
+        n = json.loads((ROOT / 'notebooks/qwen3_8b_continued_gpu_canary.ipynb').read_text())
+        setup = next(c['source'] for c in n['cells'] if c['cell_type'] == 'code' and 'training_python = None' in c['source'])
+        nodes = []
+        for node in ast.parse(setup).body:
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'constraints' for t in node.targets): break
+            nodes.append(node)
+        provisioning = compile(ast.Module(body=nodes, type_ignores=[]), '<notebook-python-provisioning>', 'exec')
+        for kernel in [(3, 12, 11), (3, 13, 16)]:
+            with self.subTest(kernel=kernel), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp); venv = base / 'venv'; py = venv / 'bin/python'; calls = []
+                def execute(command, log):
+                    calls.append([str(x) for x in command])
+                    if '--target' in command:
+                        target = command[command.index('--target') + 1]
+                        (target / 'bin').mkdir(parents=True)
+                        (target / 'bin/uv').write_text('simulated bootstrap executable')
+                def output(command, **kwargs):
+                    return json.dumps([3, 12, 11] if str(command[0]) == str(py) else kernel[:2])
+                context = dict(BASE=base, VENV=venv, PY=py, execute=execute, sys=sys, os=os,
+                               json=json, shutil=shutil, subprocess=subprocess, host={'python': str(kernel)})
+                with mock.patch.object(shutil, 'which', return_value=None), \
+                     mock.patch.object(shutil, 'disk_usage', return_value=SimpleNamespace(free=100 * 1024**3)), \
+                     mock.patch.object(subprocess, 'check_output', side_effect=output), \
+                     mock.patch.dict(os.environ), mock.patch('builtins.print'):
+                    exec(provisioning, context)
+                receipt = json.loads((base / 'python-environment.json').read_text())
+                self.assertEqual(receipt['training_version'], [3, 12, 11])
+                if kernel[1] == 13:
+                    self.assertTrue(any('uv==0.9.11' in x for x in calls))
+                    self.assertTrue(any(x[1:4] == ['python', 'install', '3.12.11'] for x in calls))
+                    self.assertTrue(any('--seed' in x and '3.12.11' in x for x in calls))
+                else:
+                    self.assertEqual(calls, [[sys.executable, '-m', 'venv', str(venv)]])
+
 
 if __name__ == '__main__':
     unittest.main()

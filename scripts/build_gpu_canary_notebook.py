@@ -21,7 +21,9 @@ def build():
     md('''
         # Test B — continued Qwen3-8B adapter, two optimizer steps
 
-        Upload this notebook into Colab or Kaggle. Use a Linux x86-64 Python 3.10–3.12 runtime.
+        Upload this notebook into Colab or Kaggle. Use a Linux x86-64 notebook runtime (Python 3.10 or newer).
+        The training subprocess uses Python 3.10–3.12; a newer notebook kernel automatically gets a separate
+        Python 3.12.11 environment via pinned uv, without changing the notebook kernel or training requirements.
         Do not allocate paid hardware until you approve its provider, GPU, actual hourly rate and budget.
         Select one 24 GB-class GPU (at least 22 GiB reported total, 20 GiB free), compute capability 7.x–9.x.
         Newer compute architectures need a separately reviewed CUDA stack. Two 16 GB GPUs are not a substitute.
@@ -40,8 +42,10 @@ def build():
     code('''
         import os, sys, json, subprocess, shutil, hashlib, platform
         from pathlib import Path
-        if platform.system() != 'Linux' or platform.machine() != 'x86_64' or not (3, 10) <= sys.version_info[:2] <= (3, 12):
-            raise RuntimeError('Use a Linux x86-64 Python 3.10–3.12 notebook runtime; do not change dependencies silently.')
+        host = {'system': platform.system(), 'machine': platform.machine(), 'python': platform.python_version()}
+        print('Notebook host:', json.dumps(host))
+        if host['system'] != 'Linux' or host['machine'] != 'x86_64' or sys.version_info[:2] < (3, 10):
+            raise RuntimeError(f'Need Linux x86_64 and a Python >=3.10 notebook kernel; detected {host}')
         os.environ['CUDA_VISIBLE_DEVICES'] = '0'
         os.environ['TOKENIZERS_PARALLELISM'] = 'false'
         os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
@@ -98,6 +102,9 @@ def build():
     md('''
         ## 3. Install isolated CUDA/PyTorch and packaged project dependencies
         This does not load model weights. Allow at least 40 GiB free disk for dependencies, model cache and outputs.
+        Python 3.13+ notebook kernels are supported: the cell first looks for an installed Python 3.10–3.12.
+        If none exists, it installs uv 0.9.11 locally and downloads Python 3.12.11 for the training environment.
+        This uses [uv's documented Python installation and environment support](https://docs.astral.sh/uv/guides/install-python/).
         The CUDA wheel needs a compatible host NVIDIA driver. Driver failures must be fixed before training.
         Pinning is based on the [official PyTorch 2.8 CUDA 12.6 wheel instructions](https://pytorch.org/get-started/previous-versions/)
         and [bitsandbytes 0.48.2 compatibility](https://huggingface.co/docs/bitsandbytes/v0.48.2/installation).
@@ -108,7 +115,36 @@ def build():
             raise RuntimeError('Need at least 40 GiB free cloud-local disk; no model has been loaded.')
         if VENV.exists():
             raise RuntimeError('Environment already exists; inspect installation logs instead of reinstalling automatically.')
-        execute([sys.executable, '-m', 'venv', VENV], 'venv.log')
+        training_python = None
+        candidates = [sys.executable] + [shutil.which(name) for name in ('python3.12', 'python3.11', 'python3.10')]
+        for candidate in dict.fromkeys(x for x in candidates if x):
+            version = tuple(json.loads(subprocess.check_output(
+                [candidate, '-c', 'import json,sys; print(json.dumps(list(sys.version_info[:2])))'], text=True)))
+            if (3, 10) <= version <= (3, 12):
+                training_python = candidate
+                break
+        if training_python:
+            execute([training_python, '-m', 'venv', VENV], 'venv.log')
+        else:
+            bootstrap = BASE / 'uv-bootstrap'
+            if bootstrap.exists():
+                raise RuntimeError('Previous bootstrap attempt exists; inspect its logs before retrying.')
+            execute([sys.executable, '-m', 'pip', 'install', '--no-deps', '--target', bootstrap,
+                     'uv==0.9.11'], 'uv-bootstrap.log')
+            uv = bootstrap / 'bin/uv'
+            if not uv.is_file():
+                raise RuntimeError('Pinned uv executable missing; inspect uv-bootstrap.log')
+            os.environ['UV_PYTHON_INSTALL_DIR'] = str(BASE / 'managed-python')
+            os.environ['UV_CACHE_DIR'] = str(BASE / 'uv-cache')
+            execute([uv, 'python', 'install', '3.12.11'], 'python-install.log')
+            execute([uv, 'venv', '--python', '3.12.11', '--seed', VENV], 'venv.log')
+        training_version = json.loads(subprocess.check_output(
+            [PY, '-c', 'import json,sys; print(json.dumps(list(sys.version_info[:3])))'], text=True))
+        if not (3, 10) <= tuple(training_version[:2]) <= (3, 12):
+            raise RuntimeError(f'Training interpreter is incompatible: {training_version}')
+        (BASE / 'python-environment.json').write_text(json.dumps(
+            {'notebook_host': host, 'training_python': str(PY), 'training_version': training_version}, indent=2))
+        print('Isolated training Python:', training_version)
         constraints = BASE / 'constraints.txt'
         constraints.write_text('torch==2.8.0\\ntorchvision==0.23.0\\ntorchaudio==2.8.0\\ntransformers==4.57.3\\ntrl==0.25.1\\npeft==0.18.0\\nlighteval==0.11.0\\naccelerate==1.11.0\\nbitsandbytes==0.48.2\\ndatasets==4.4.1\\ntokenizers==0.22.2\\nhuggingface-hub==0.36.0\\nsafetensors==0.6.2\\n')
         execute([PY, '-m', 'pip', 'install', '--upgrade', 'pip'], 'pip-bootstrap.log')
