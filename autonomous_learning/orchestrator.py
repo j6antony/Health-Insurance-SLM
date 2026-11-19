@@ -255,18 +255,30 @@ class Controller:
                     projected = stage('PROJECT_TASKS', lambda: {'examples': [example for row in expanded['verified']
                                                                                for example in project(row['scenario'], row['rendered'])]})
                     def validate_stage():
-                        evaluation = []
+                        evaluation, development_only = [], []
                         for tier in ('development', 'probes'):
                             for path in self.storage.path('evaluation/' + tier).glob('*.json'):
                                 if path.name.startswith('._'):
                                     continue
-                                evaluation.extend(read_json(path)['cases'])
+                                benchmark = read_json(path)
+                                from .evaluation import DEVELOPMENT_PROTOCOL
+                                if (tier == 'development' and benchmark.get('version') == 2
+                                        and benchmark.get('development_protocol') == DEVELOPMENT_PROTOCOL
+                                        and benchmark.get('tier') == 'development'
+                                        and benchmark.get('process') == 'in_generator'
+                                        and benchmark.get('independently_reviewed') is False):
+                                    development_only.extend(benchmark['cases'])
+                                else:
+                                    evaluation.extend(benchmark['cases'])
                         replay = []
                         for path in sorted(self.storage.path('datasets/approved_sft').glob('*/examples.jsonl')):
                             from .evidence import EVIDENCE_POLICY
                             replay.extend(row for line in path.read_text().splitlines()
                                           if (row := json.loads(line)).get('evidence_policy') == EVIDENCE_POLICY)
                         from .dataset import reject_sealed_leakage
+                        if development_only:
+                            from .paired_evaluation import development_leakage
+                            development_leakage(projected['examples'] + replay, development_only)
                         for path in self.storage.path('evaluation/release_holdout/exclusions').glob('*.json'):
                             if path.name.startswith('._'):
                                 continue

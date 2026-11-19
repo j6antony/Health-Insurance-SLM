@@ -15,10 +15,19 @@ from .tasks import TASKS, SCHEMAS
 
 SCORING = 'document-verification-grounded-v3'
 TIERS = ('development', 'probes', 'release_holdout')
+DEVELOPMENT_PROTOCOL = 'in-generator-family-content-separated-v1'
 
 
 def import_benchmark(storage, benchmark, training=()):
-    if set(benchmark) != {'version', 'tier', 'process', 'independently_reviewed', 'cases'} or benchmark['version'] != 1:
+    keys = {'version', 'tier', 'process', 'independently_reviewed', 'cases'}
+    development_only = benchmark.get('version') == 2
+    if development_only:
+        if (set(benchmark) != keys | {'development_protocol'}
+                or benchmark['development_protocol'] != DEVELOPMENT_PROTOCOL
+                or benchmark['tier'] != 'development' or benchmark['process'] != 'in_generator'
+                or benchmark['independently_reviewed'] is not False):
+            raise ValueError('Version 2 is restricted to unreviewed in-generator development')
+    elif set(benchmark) != keys or benchmark['version'] != 1:
         raise ValueError('Invalid benchmark import contract')
     if benchmark['tier'] not in TIERS or benchmark['process'] not in ('in_generator', 'independent'):
         raise ValueError('Unknown benchmark tier/process')
@@ -42,7 +51,13 @@ def import_benchmark(storage, benchmark, training=()):
             raise ValueError('Evaluation schema mismatch')
         validate_schema(row['target'], SCHEMAS[row['task']])
         validate_evidence(row['payload'], row['target'])
-    reject_leakage(training, benchmark['cases'])
+    if development_only:
+        from .paired_evaluation import development_leakage
+        for row in benchmark['cases']:
+            validate_example(row)
+        development_leakage(training, benchmark['cases'])
+    else:
+        reject_leakage(training, benchmark['cases'])
     identity = digest(benchmark)
     receipt = storage.write(f'evaluation/{benchmark["tier"]}/{identity}.json', benchmark)
     if benchmark['tier'] == 'release_holdout':
