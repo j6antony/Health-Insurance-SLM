@@ -102,7 +102,7 @@ The [matching Drive adapter folder](https://drive.google.com/drive/folders/1_JyO
 
 - Config SHA-256: `1fe1fdbfa6b611c63f9d7dc84d431f2b3685338d91678510f579b24ae002d5df`.
 - Weights SHA-256: `154c508775106e8ffe15e224c9f256131852d384e4efaea6af2bdf3d35e99c6f`.
-- Their legacy combined identity matches `e8e5edc7...` exactly. Base revision matches the new pinned revision.
+- Their legacy combined identity matches `e8e5edc7...` exactly. The saved adapter config has `revision: null`, so its historical base revision is unproven. The continuation job explicitly pins the new base revision. See `GPU_CANARY_TEST_B.md` for the verified package, local tokenizer preflight and cloud execution notebook.
 
 This checkpoint uses **rank-32 RSLoRA, alpha 32, dropout 0.0**. The worker now preserves that scaling variant instead of silently using rank-16 standard LoRA. Native PEFT on a tiny random CPU Qwen-shaped fixture verifies all seven target modules and scaling `32/sqrt(32)`. This is not a load test of the full saved adapter on quantized Qwen.
 
