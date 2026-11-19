@@ -56,3 +56,7 @@ precedence. Release ZIPs carry weights and adapter configuration, so a
 release-based run starts a new baseline, round history, and API budget.
 Set `UPLOAD_ADAPTERS_TO_GITHUB = True` and provide Contents write access to
 publish completed rounds for the next fresh Kaggle session.
+
+## Rule-grounded autonomous learning
+
+See [AUTONOMOUS_LEARNING.md](AUTONOMOUS_LEARNING.md) for the additive synthetic document-verification pipeline, SSD storage, no-cost dry run, manual GPU transfers, and its current validation limits.

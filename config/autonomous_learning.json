@@ -1,0 +1,13 @@
+{
+  "max_cycles": 1,
+  "max_wall_seconds": 3600,
+  "max_non_improving": 2,
+  "master_scenarios": 24,
+  "seed": 42,
+  "teacher_enabled": false,
+  "max_api_calls": 20,
+  "max_api_usd": 0,
+  "max_gpu_usd": 0,
+  "gpu_backend": "manual",
+  "backup_enabled": false
+}
